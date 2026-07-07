@@ -109,22 +109,6 @@
             margin-top: 20px;
         }
         
-        #debug-info {
-            position: fixed;
-            top: 5px;
-            right: 5px;
-            background: rgba(0,0,0,0.9);
-            padding: 10px;
-            border-radius: 8px;
-            font-size: 12px;
-            color: #0f0;
-            z-index: 300;
-            max-width: 300px;
-            line-height: 1.6;
-            max-height: 250px;
-            overflow-y: auto;
-        }
-        
         #camera-row {
             display: none;
             justify-content: center;
@@ -150,6 +134,20 @@
             color: white;
             font-size: 14px;
             cursor: pointer;
+        }
+        
+        #guide-text {
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7);
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            color: #ffaa00;
+            z-index: 50;
+            display: none;
         }
     </style>
 </head>
@@ -184,7 +182,7 @@
     </div>
     
     <div id="angle-display">角度: --°</div>
-    <div id="debug-info">等待启动...</div>
+    <div id="guide-text">提示信息</div>
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
 
@@ -199,25 +197,22 @@
         const startBtn = document.getElementById('start-btn');
         const mainDiv = document.getElementById('main');
         const headerDiv = document.getElementById('header');
-        const debugInfo = document.getElementById('debug-info');
         const cameraRow = document.getElementById('camera-row');
         const cameraSelect = document.getElementById('camera-select');
         const switchCamBtn = document.getElementById('switch-cam-btn');
+        const guideText = document.getElementById('guide-text');
 
         const GOUWAN_THRESHOLD = 35;
+        const SMOOTHING_FACTOR = 0.3;  // 角度平滑系数，越小越平滑
+        
         let isRunning = false;
         let holistic = null;
         let currentStream = null;
         let videoDevices = [];
         let currentDeviceIndex = 0;
-        let modelReady = false;
-
-        function log(msg) {
-            console.log(msg);
-            const time = new Date().toLocaleTimeString();
-            debugInfo.innerHTML += `<br>[${time}] ${msg}`;
-            debugInfo.scrollTop = debugInfo.scrollHeight;
-        }
+        let smoothedAngle = 180;  // 平滑后的角度
+        let lastValidHand = null;  // 记住上次检测到的手（防止左右跳变）
+        let handStickCount = 0;    // 连续检测到同一只手计数
 
         // ========== 摄像头 ==========
         async function getCameras() {
@@ -249,7 +244,6 @@
                 cameraRow.style.display = 'flex';
                 return true;
             } catch (e) {
-                log('枚举失败: ' + e.message);
                 return false;
             }
         }
@@ -287,11 +281,9 @@
                 canvasElement.width = vw;
                 canvasElement.height = vh;
                 
-                log(`视频就绪: ${vw}x${vh}`);
                 return true;
                 
             } catch (e) {
-                log('摄像头失败: ' + e.message);
                 alert('摄像头启动失败: ' + e.message);
                 return false;
             }
@@ -329,20 +321,14 @@
             headerDiv.style.display = 'block';
             statusDiv.textContent = '加载模型...';
 
-            // 初始化 Holistic
             await initHolistic();
         });
 
         // ========== 初始化 Holistic ==========
         async function initHolistic() {
-            log('创建 Holistic...');
-            
-            return new Promise((resolve, reject) => {
+            return new Promise((resolve) => {
                 holistic = new Holistic({
-                    locateFile: (file) => {
-                        log('加载: ' + file);
-                        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
-                    }
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
                 });
 
                 holistic.setOptions({
@@ -350,45 +336,35 @@
                     smoothLandmarks: true,
                     enableSegmentation: false,
                     refineFaceLandmarks: false,
-                    minDetectionConfidence: 0.3,
+                    minDetectionConfidence: 0.3,   // 降低阈值，提高检出率
                     minTrackingConfidence: 0.3
                 });
 
-                // 关键：第一次 onResults 表示模型就绪
                 let firstResult = true;
                 holistic.onResults((results) => {
                     if (firstResult) {
                         firstResult = false;
-                        modelReady = true;
-                        log('✅ 模型首次检测到结果');
                         statusDiv.textContent = '检测中...';
                     }
                     onResults(results);
                 });
 
-                log('Holistic 创建完成，等待模型就绪...');
-                
-                // 发送一帧测试
                 setTimeout(async () => {
                     try {
-                        log('发送测试帧...');
                         await holistic.send({ image: videoElement });
-                        log('测试帧发送成功');
                         isRunning = true;
                         processFrame();
                         resolve();
                     } catch (e) {
-                        log('测试帧失败: ' + e.message);
-                        reject(e);
+                        statusDiv.textContent = '模型错误';
+                        resolve();
                     }
-                }, 1000); // 等1秒让 WASM 初始化
+                }, 1000);
             });
         }
 
         // ========== 处理结果 ==========
         function onResults(results) {
-            log('onResults 触发'); // 关键日志
-            
             const w = canvasElement.width;
             const h = canvasElement.height;
             
@@ -398,25 +374,61 @@
             const leftHand = results.leftHandLandmarks;
             const rightHand = results.rightHandLandmarks;
 
+            // 优化左右手判断：优先保持上次检测到的手，防止跳变
             let hand = null;
             let isLeft = false;
             
-            if (leftHand) {
+            if (lastValidHand === 'left' && leftHand) {
                 hand = leftHand;
                 isLeft = true;
+                handStickCount++;
+            } else if (lastValidHand === 'right' && rightHand) {
+                hand = rightHand;
+                isLeft = false;
+                handStickCount++;
+            } else if (leftHand && rightHand) {
+                // 两只手都有，选更靠近画面中心的（通常是写字的手）
+                const leftCenter = Math.abs(leftHand[0].x - 0.5) + Math.abs(leftHand[0].y - 0.5);
+                const rightCenter = Math.abs(rightHand[0].x - 0.5) + Math.abs(rightHand[0].y - 0.5);
+                if (leftCenter < rightCenter) {
+                    hand = leftHand;
+                    isLeft = true;
+                } else {
+                    hand = rightHand;
+                    isLeft = false;
+                }
+                lastValidHand = isLeft ? 'left' : 'right';
+                handStickCount = 1;
+            } else if (leftHand) {
+                hand = leftHand;
+                isLeft = true;
+                lastValidHand = 'left';
+                handStickCount = 1;
             } else if (rightHand) {
                 hand = rightHand;
                 isLeft = false;
+                lastValidHand = 'right';
+                handStickCount = 1;
+            } else {
+                // 没有检测到手
+                handStickCount = 0;
             }
 
-            log(`Pose:${!!pose} Hand:${!!hand} Left:${isLeft}`);
+            // 如果长时间(10帧)没检测到手，重置记忆
+            if (handStickCount === 0 && lastValidHand) {
+                // 保持记忆，不立即重置
+            }
 
-            // 情况1：有 Pose 有 Hand
+            // 情况1：有 Pose 有 Hand → 计算角度
             if (pose && hand) {
                 const result = calcAngle(pose, hand, isLeft);
-                drawAll(pose, hand, isLeft, result, w, h);
                 
                 if (result) {
+                    // 平滑角度
+                    smoothedAngle = smoothedAngle * (1 - SMOOTHING_FACTOR) + result.angle * SMOOTHING_FACTOR;
+                    result.angle = smoothedAngle;
+                    
+                    drawAll(pose, hand, isLeft, result, w, h);
                     angleDisplay.textContent = `手腕: ${result.angle.toFixed(1)}°`;
                     
                     if (result.angle < (180 - GOUWAN_THRESHOLD) && result.isBendingInward) {
@@ -431,11 +443,12 @@
                         statusDiv.textContent = '✅ 正常';
                         statusDiv.style.color = '#00ff88';
                     }
+                    guideText.style.display = 'none';
+                    return;
                 }
-                return;
             }
 
-            // 情况2：只有 Hand
+            // 情况2：只有 Hand，没有 Pose
             if (hand && !pose) {
                 drawHand(hand, w, h);
                 statusDiv.textContent = '请后退，让肩膀入镜';
@@ -443,10 +456,12 @@
                 angleDisplay.textContent = '手腕: --°';
                 angleDisplay.style.background = 'rgba(0,0,0,0.7)';
                 alertBox.style.display = 'none';
+                guideText.style.display = 'block';
+                guideText.textContent = '⚠️ 请后退，让肩膀入镜';
                 return;
             }
 
-            // 情况3：只有 Pose
+            // 情况3：只有 Pose，没有 Hand
             if (pose && !hand) {
                 drawPose(pose, w, h);
                 statusDiv.textContent = '请将手放入画面';
@@ -454,6 +469,8 @@
                 angleDisplay.textContent = '手腕: --°';
                 angleDisplay.style.background = 'rgba(0,0,0,0.7)';
                 alertBox.style.display = 'none';
+                guideText.style.display = 'block';
+                guideText.textContent = '⚠️ 请将手放入画面';
                 return;
             }
 
@@ -464,9 +481,11 @@
             angleDisplay.textContent = '手腕: --°';
             angleDisplay.style.background = 'rgba(0,0,0,0.7)';
             alertBox.style.display = 'none';
+            guideText.style.display = 'block';
+            guideText.textContent = '⚠️ 请调整位置，让肩膀和手臂入镜';
         }
 
-        // ========== 计算 ==========
+        // ========== 计算角度 ==========
         function mx(p) { return { x: 1 - p.x, y: p.y }; }
 
         function calcAngle(pose, hand, isLeft) {
@@ -474,6 +493,11 @@
             const wristIdx = isLeft ? 15 : 16;
             
             if (!pose[elbowIdx] || !pose[wristIdx]) return null;
+            
+            // 检查关键点可见度（visibility > 0.5）
+            if (pose[elbowIdx].visibility < 0.5 || pose[wristIdx].visibility < 0.5) {
+                return null;
+            }
             
             const elbow = mx(pose[elbowIdx]);
             const wrist = mx(pose[wristIdx]);
@@ -544,7 +568,7 @@
 
             canvasCtx.fillStyle = 'yellow';
             canvasCtx.font = 'bold 16px sans-serif';
-            canvasCtx.fillText(`${isLeft?'左':'右'}手 ${result?result.angle.toFixed(1):'--'}°`, 10, 25);
+            canvasCtx.fillText(`${isLeft?'左':'右'}手 ${result.angle.toFixed(1)}°`, 10, 25);
         }
 
         function drawHand(hand, w, h) {
@@ -626,7 +650,7 @@
                 try {
                     await holistic.send({ image: videoElement });
                 } catch (e) {
-                    log('send错误: ' + e.message);
+                    // 静默处理
                 }
             }
             
