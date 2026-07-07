@@ -45,7 +45,6 @@
             z-index: 1;
         }
         
-        /* 前置摄像头镜像 */
         #input_video.mirror {
             transform: scaleX(-1);
         }
@@ -60,7 +59,6 @@
             pointer-events: none;
         }
         
-        /* Canvas 也同步镜像 */
         #output_canvas.mirror {
             transform: scaleX(-1);
         }
@@ -222,7 +220,26 @@
         let smoothedAngle = 180;
         let lastValidHand = null;
         let handStickCount = 0;
-        let isFrontCamera = true;  // 标记当前是否是前置摄像头
+        let isFrontCamera = true;
+        let isGouwan = false;           // 当前是否勾腕状态
+        let lastSpeakTime = 0;          // 上次语音时间
+        const SPEAK_INTERVAL = 3000;    // 语音间隔3秒，避免连续播报
+
+        // ========== 语音提醒 ==========
+        function speak(text) {
+            if (!window.speechSynthesis) return;
+            
+            // 取消之前的语音
+            window.speechSynthesis.cancel();
+            
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'zh-CN';
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+            
+            window.speechSynthesis.speak(utterance);
+        }
 
         // ========== 摄像头 ==========
         async function getCameras() {
@@ -258,7 +275,6 @@
             }
         }
 
-        // 判断是否是前置摄像头
         function checkIfFrontCamera(device) {
             const label = (device.label || '').toLowerCase();
             return label.includes('front') || 
@@ -300,11 +316,9 @@
                 canvasElement.width = vw;
                 canvasElement.height = vh;
                 
-                // 判断当前摄像头类型并设置镜像
                 const currentDevice = videoDevices.find(d => d.deviceId === (deviceId || cameraSelect.value));
                 isFrontCamera = checkIfFrontCamera(currentDevice);
                 
-                // 前置摄像头镜像，后置不镜像
                 if (isFrontCamera) {
                     videoElement.classList.add('mirror');
                     canvasElement.classList.add('mirror');
@@ -453,17 +467,30 @@
                     drawAll(pose, hand, isLeft, result, w, h);
                     angleDisplay.textContent = `手腕: ${result.angle.toFixed(1)}°`;
                     
-                    if (result.angle < (180 - GOUWAN_THRESHOLD) && result.isBendingInward) {
+                    // 判断勾腕
+                    const nowGouwan = result.angle < (180 - GOUWAN_THRESHOLD) && result.isBendingInward;
+                    
+                    if (nowGouwan) {
                         alertBox.style.display = 'block';
                         angleDisplay.style.background = 'rgba(255, 0, 0, 0.8)';
                         statusDiv.textContent = '⚠️ 勾腕！';
                         statusDiv.style.color = '#ff4444';
                         if (navigator.vibrate) navigator.vibrate(200);
+                        
+                        // 语音提醒：进入勾腕状态时播报，且间隔3秒
+                        const now = Date.now();
+                        if (!isGouwan || (now - lastSpeakTime > SPEAK_INTERVAL)) {
+                            speak('请调整手腕');
+                            lastSpeakTime = now;
+                        }
+                        isGouwan = true;
+                        
                     } else {
                         alertBox.style.display = 'none';
                         angleDisplay.style.background = 'rgba(0, 200, 100, 0.8)';
                         statusDiv.textContent = '✅ 正常';
                         statusDiv.style.color = '#00ff88';
+                        isGouwan = false;
                     }
                     guideText.style.display = 'none';
                     return;
@@ -479,6 +506,7 @@
                 alertBox.style.display = 'none';
                 guideText.style.display = 'block';
                 guideText.textContent = '⚠️ 请后退，让肩膀入镜';
+                isGouwan = false;
                 return;
             }
 
@@ -491,6 +519,7 @@
                 alertBox.style.display = 'none';
                 guideText.style.display = 'block';
                 guideText.textContent = '⚠️ 请将手放入画面';
+                isGouwan = false;
                 return;
             }
 
@@ -502,11 +531,11 @@
             alertBox.style.display = 'none';
             guideText.style.display = 'block';
             guideText.textContent = '⚠️ 请调整位置，让肩膀和手臂入镜';
+            isGouwan = false;
         }
 
         // ========== 计算角度 ==========
         function mx(p) { 
-            // 后置摄像头不需要镜像坐标，前置需要
             if (isFrontCamera) {
                 return { x: 1 - p.x, y: p.y };
             } else {
@@ -674,9 +703,7 @@
             if (videoElement.readyState >= 2 && videoElement.videoWidth > 0) {
                 try {
                     await holistic.send({ image: videoElement });
-                } catch (e) {
-                    // 静默处理
-                }
+                } catch (e) {}
             }
             
             requestAnimationFrame(processFrame);
