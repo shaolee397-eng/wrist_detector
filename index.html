@@ -42,8 +42,12 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1);
             z-index: 1;
+        }
+        
+        /* 前置摄像头镜像 */
+        #input_video.mirror {
+            transform: scaleX(-1);
         }
         
         #output_canvas {
@@ -54,6 +58,11 @@
             height: 100%;
             z-index: 2;
             pointer-events: none;
+        }
+        
+        /* Canvas 也同步镜像 */
+        #output_canvas.mirror {
+            transform: scaleX(-1);
         }
         
         #alert-box {
@@ -203,16 +212,17 @@
         const guideText = document.getElementById('guide-text');
 
         const GOUWAN_THRESHOLD = 35;
-        const SMOOTHING_FACTOR = 0.3;  // 角度平滑系数，越小越平滑
+        const SMOOTHING_FACTOR = 0.3;
         
         let isRunning = false;
         let holistic = null;
         let currentStream = null;
         let videoDevices = [];
         let currentDeviceIndex = 0;
-        let smoothedAngle = 180;  // 平滑后的角度
-        let lastValidHand = null;  // 记住上次检测到的手（防止左右跳变）
-        let handStickCount = 0;    // 连续检测到同一只手计数
+        let smoothedAngle = 180;
+        let lastValidHand = null;
+        let handStickCount = 0;
+        let isFrontCamera = true;  // 标记当前是否是前置摄像头
 
         // ========== 摄像头 ==========
         async function getCameras() {
@@ -248,6 +258,15 @@
             }
         }
 
+        // 判断是否是前置摄像头
+        function checkIfFrontCamera(device) {
+            const label = (device.label || '').toLowerCase();
+            return label.includes('front') || 
+                   label.includes('user') || 
+                   label.includes('前置') ||
+                   label.includes('face');
+        }
+
         async function startCamera(deviceId) {
             if (currentStream) {
                 currentStream.getTracks().forEach(t => t.stop());
@@ -280,6 +299,19 @@
                 const vh = videoElement.videoHeight || 480;
                 canvasElement.width = vw;
                 canvasElement.height = vh;
+                
+                // 判断当前摄像头类型并设置镜像
+                const currentDevice = videoDevices.find(d => d.deviceId === (deviceId || cameraSelect.value));
+                isFrontCamera = checkIfFrontCamera(currentDevice);
+                
+                // 前置摄像头镜像，后置不镜像
+                if (isFrontCamera) {
+                    videoElement.classList.add('mirror');
+                    canvasElement.classList.add('mirror');
+                } else {
+                    videoElement.classList.remove('mirror');
+                    canvasElement.classList.remove('mirror');
+                }
                 
                 return true;
                 
@@ -336,7 +368,7 @@
                     smoothLandmarks: true,
                     enableSegmentation: false,
                     refineFaceLandmarks: false,
-                    minDetectionConfidence: 0.3,   // 降低阈值，提高检出率
+                    minDetectionConfidence: 0.3,
                     minTrackingConfidence: 0.3
                 });
 
@@ -374,7 +406,6 @@
             const leftHand = results.leftHandLandmarks;
             const rightHand = results.rightHandLandmarks;
 
-            // 优化左右手判断：优先保持上次检测到的手，防止跳变
             let hand = null;
             let isLeft = false;
             
@@ -387,7 +418,6 @@
                 isLeft = false;
                 handStickCount++;
             } else if (leftHand && rightHand) {
-                // 两只手都有，选更靠近画面中心的（通常是写字的手）
                 const leftCenter = Math.abs(leftHand[0].x - 0.5) + Math.abs(leftHand[0].y - 0.5);
                 const rightCenter = Math.abs(rightHand[0].x - 0.5) + Math.abs(rightHand[0].y - 0.5);
                 if (leftCenter < rightCenter) {
@@ -410,21 +440,13 @@
                 lastValidHand = 'right';
                 handStickCount = 1;
             } else {
-                // 没有检测到手
                 handStickCount = 0;
             }
 
-            // 如果长时间(10帧)没检测到手，重置记忆
-            if (handStickCount === 0 && lastValidHand) {
-                // 保持记忆，不立即重置
-            }
-
-            // 情况1：有 Pose 有 Hand → 计算角度
             if (pose && hand) {
                 const result = calcAngle(pose, hand, isLeft);
                 
                 if (result) {
-                    // 平滑角度
                     smoothedAngle = smoothedAngle * (1 - SMOOTHING_FACTOR) + result.angle * SMOOTHING_FACTOR;
                     result.angle = smoothedAngle;
                     
@@ -448,7 +470,6 @@
                 }
             }
 
-            // 情况2：只有 Hand，没有 Pose
             if (hand && !pose) {
                 drawHand(hand, w, h);
                 statusDiv.textContent = '请后退，让肩膀入镜';
@@ -461,7 +482,6 @@
                 return;
             }
 
-            // 情况3：只有 Pose，没有 Hand
             if (pose && !hand) {
                 drawPose(pose, w, h);
                 statusDiv.textContent = '请将手放入画面';
@@ -474,7 +494,6 @@
                 return;
             }
 
-            // 情况4：什么都没有
             drawGuide(w, h);
             statusDiv.textContent = '未检测到身体';
             statusDiv.style.color = '#aaa';
@@ -486,7 +505,14 @@
         }
 
         // ========== 计算角度 ==========
-        function mx(p) { return { x: 1 - p.x, y: p.y }; }
+        function mx(p) { 
+            // 后置摄像头不需要镜像坐标，前置需要
+            if (isFrontCamera) {
+                return { x: 1 - p.x, y: p.y };
+            } else {
+                return { x: p.x, y: p.y };
+            }
+        }
 
         function calcAngle(pose, hand, isLeft) {
             const elbowIdx = isLeft ? 13 : 14;
@@ -494,7 +520,6 @@
             
             if (!pose[elbowIdx] || !pose[wristIdx]) return null;
             
-            // 检查关键点可见度（visibility > 0.5）
             if (pose[elbowIdx].visibility < 0.5 || pose[wristIdx].visibility < 0.5) {
                 return null;
             }
