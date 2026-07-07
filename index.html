@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>勾腕识别工具</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            background: #1a1a2e;
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        #header {
+            padding: 10px;
+            text-align: center;
+            z-index: 10;
+            width: 100%;
+        }
+        
+        h1 { font-size: 22px; margin-bottom: 3px; }
+        
+        #status {
+            font-size: 13px;
+            color: #aaa;
+        }
+        
+        #camera-select-row {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            align-items: center;
+            padding: 5px;
+            z-index: 10;
+        }
+        
+        #camera-select {
+            padding: 8px 15px;
+            font-size: 14px;
+            border-radius: 20px;
+            border: none;
+            background: #333;
+            color: white;
+            min-width: 150px;
+        }
+        
+        #switch-btn {
+            padding: 8px 20px;
+            font-size: 14px;
+            background: #0066cc;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+        
+        #camera-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        #input_video {
+            display: none;
+        }
+        
+        #output_canvas {
+            width: 100%;
+            height: 100%;
+            max-height: 480px;
+            border-radius: 12px;
+            /* 镜像显示，像照镜子一样 */
+            transform: scaleX(-1);
+        }
+        
+        #alert-box {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.9);
+            color: white;
+            padding: 30px 50px;
+            border-radius: 20px;
+            font-size: 32px;
+            font-weight: bold;
+            display: none;
+            z-index: 100;
+            text-align: center;
+            box-shadow: 0 0 50px rgba(255, 0, 0, 0.5);
+            animation: pulse 0.5s infinite alternate;
+        }
+        
+        @keyframes pulse {
+            from { transform: translate(-50%, -50%) scale(1); }
+            to { transform: translate(-50%, -50%) scale(1.05); }
+        }
+        
+        #angle-display {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 18px;
+            z-index: 50;
+        }
+        
+        #start-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 200;
+        }
+        
+        #start-btn {
+            padding: 20px 60px;
+            font-size: 24px;
+            background: #00d4aa;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            margin-top: 30px;
+            transition: transform 0.2s;
+        }
+        
+        #start-btn:hover { transform: scale(1.05); }
+        #start-btn:active { transform: scale(0.95); }
+        #start-btn:disabled { background: #666; cursor: not-allowed; }
+        
+        .instructions {
+            text-align: center;
+            padding: 20px;
+            max-width: 400px;
+            line-height: 1.6;
+            color: #ccc;
+        }
+        
+        .instructions h2 {
+            color: #00d4aa;
+            margin-bottom: 15px;
+        }
+        
+        .hand-icon { font-size: 60px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div id="start-screen">
+        <div class="hand-icon">✋</div>
+        <div class="instructions">
+            <h2>勾腕识别工具</h2>
+            <p>1. 点击按钮允许摄像头权限</p>
+            <p>2. 摄像头要能拍到你的肩膀、手臂和手</p>
+            <p>3. 如果手腕向内勾，屏幕会显示红色警告</p>
+            <p>4. 保持正确姿势，绿色表示正常</p>
+        </div>
+        <button id="start-btn">📷 开启摄像头</button>
+    </div>
+
+    <div id="header">
+        <h1>✍️ 勾腕识别</h1>
+        <div id="status">等待摄像头...</div>
+    </div>
+    
+    <div id="camera-select-row" style="display:none;">
+        <select id="camera-select">
+            <option value="">加载摄像头...</option>
+        </select>
+        <button id="switch-btn">🔄 切换</button>
+    </div>
+    
+    <div id="camera-container">
+        <video id="input_video" autoplay playsinline muted></video>
+        <canvas id="output_canvas" width="640" height="480"></canvas>
+    </div>
+    
+    <div id="alert-box">
+        ⚠️ 勾腕 detected！<br>
+        <span style="font-size:18px">请调整手腕姿势</span>
+    </div>
+    
+    <div id="angle-display">角度: --°</div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const alertBox = document.getElementById('alert-box');
+        const angleDisplay = document.getElementById('angle-display');
+        const statusDiv = document.getElementById('status');
+        const startScreen = document.getElementById('start-screen');
+        const startBtn = document.getElementById('start-btn');
+        const cameraSelectRow = document.getElementById('camera-select-row');
+        const cameraSelect = document.getElementById('camera-select');
+        const switchBtn = document.getElementById('switch-btn');
+
+        const GOUWAN_THRESHOLD = 35;
+        let isRunning = false;
+        let currentStream = null;
+        let videoDevices = [];
+        let currentDeviceIndex = 0;
+
+        // ========== 摄像头 ==========
+        
+        async function enumerateCameras() {
+            try {
+                await navigator.mediaDevices.getUserMedia({ video: true });
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                videoDevices = devices.filter(d => d.kind === 'videoinput');
+                
+                cameraSelect.innerHTML = '';
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    const label = device.label || `摄像头 ${index + 1}`;
+                    option.textContent = label;
+                    cameraSelect.appendChild(option);
+                });
+                
+                const backCamera = videoDevices.findIndex(d => 
+                    d.label.toLowerCase().includes('back') || 
+                    d.label.toLowerCase().includes(' rear') ||
+                    d.label.toLowerCase().includes('后置') ||
+                    d.label.toLowerCase().includes('environment')
+                );
+                if (backCamera >= 0) {
+                    cameraSelect.selectedIndex = backCamera;
+                    currentDeviceIndex = backCamera;
+                }
+                
+                cameraSelectRow.style.display = 'flex';
+                return true;
+            } catch (e) {
+                console.error('枚举摄像头失败:', e);
+                return false;
+            }
+        }
+
+        async function startCamera(deviceId = null) {
+            startBtn.textContent = '启动中...';
+            startBtn.disabled = true;
+
+            if (currentStream) {
+                currentStream.getTracks().forEach(t => t.stop());
+                currentStream = null;
+            }
+
+            const selectedId = deviceId || cameraSelect.value || undefined;
+            
+            const constraints = {
+                video: {
+                    width: { ideal: 640 },
+                    height: { ideal: 480 },
+                    deviceId: selectedId ? { exact: selectedId } : undefined
+                },
+                audio: false
+            };
+
+            if (!selectedId && videoDevices.length > 1) {
+                const back = videoDevices.find(d => 
+                    d.label.toLowerCase().includes('back') ||
+                    d.label.toLowerCase().includes('environment')
+                );
+                if (back) {
+                    constraints.video.deviceId = { exact: back.deviceId };
+                }
+            }
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                currentStream = stream;
+                videoElement.srcObject = stream;
+                
+                await new Promise((resolve, reject) => {
+                    videoElement.onloadedmetadata = () => resolve();
+                    videoElement.onerror = () => reject(new Error('视频加载失败'));
+                    setTimeout(() => reject(new Error('超时')), 10000);
+                });
+
+                await videoElement.play();
+                
+                isRunning = true;
+                startScreen.style.display = 'none';
+                statusDiv.textContent = '摄像头已启动';
+                
+                const track = stream.getVideoTracks()[0];
+                const settings = track.getSettings();
+                if (settings.deviceId) {
+                    cameraSelect.value = settings.deviceId;
+                }
+                
+                processFrame();
+
+            } catch (error) {
+                startBtn.textContent = '启动失败，点击重试';
+                startBtn.disabled = false;
+                
+                let msg = '无法启动摄像头: ' + error.message;
+                if (error.name === 'NotAllowedError') {
+                    msg = '摄像头权限被拒绝';
+                } else if (error.name === 'NotFoundError') {
+                    msg = '未找到指定摄像头';
+                } else if (error.name === 'OverconstrainedError') {
+                    msg = '该摄像头不支持此配置，尝试切换其他摄像头';
+                }
+                alert(msg);
+            }
+        }
+
+        switchBtn.addEventListener('click', () => {
+            if (videoDevices.length < 2) {
+                alert('只有一个摄像头可用');
+                return;
+            }
+            currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
+            cameraSelect.selectedIndex = currentDeviceIndex;
+            startCamera(videoDevices[currentDeviceIndex].deviceId);
+        });
+
+        cameraSelect.addEventListener('change', () => {
+            startCamera(cameraSelect.value);
+        });
+
+        // ========== 核心：坐标镜像处理 ==========
+        
+        /*
+         * 关键修复：视频用 CSS scaleX(-1) 镜像显示
+         * 但 MediaPipe 返回的坐标是原始视频的（未镜像）
+         * 所以在绘制和计算时，需要把 x 坐标镜像回来
+         * 
+         * 镜像公式：x_mirrored = 1 - x_original
+         */
+        
+        function mirrorX(point) {
+            return { x: 1 - point.x, y: point.y };
+        }
+        
+        function calculateWristBendAngle(poseLandmarks, handLandmarks, isLeftHand) {
+            // 先镜像所有坐标，让左右与画面一致
+            const elbowIndex = isLeftHand ? 13 : 14;
+            const wristIndex = isLeftHand ? 15 : 16;
+            
+            const elbow = mirrorX(poseLandmarks[elbowIndex]);
+            const wrist = mirrorX(poseLandmarks[wristIndex]);
+            
+            // 小臂方向：肘 → 腕
+            const forearmVec = {
+                x: wrist.x - elbow.x,
+                y: wrist.y - elbow.y
+            };
+            
+            // 手掌方向：腕 → 手背中心
+            const middleMCP = mirrorX(handLandmarks[9]);
+            const ringMCP = mirrorX(handLandmarks[13]);
+            const handBack = {
+                x: (middleMCP.x + ringMCP.x) / 2,
+                y: (middleMCP.y + ringMCP.y) / 2
+            };
+            
+            const palmVec = {
+                x: handBack.x - wrist.x,
+                y: handBack.y - wrist.y
+            };
+            
+            // 计算夹角
+            const dot = forearmVec.x * palmVec.x + forearmVec.y * palmVec.y;
+            const magForearm = Math.sqrt(forearmVec.x ** 2 + forearmVec.y ** 2);
+            const magPalm = Math.sqrt(palmVec.x ** 2 + palmVec.y ** 2);
+            
+            if (magForearm === 0 || magPalm === 0) return null;
+            
+            let angle = Math.acos(Math.min(1, Math.max(-1, dot / (magForearm * magPalm)))) * (180 / Math.PI);
+            
+            // 判断弯曲方向
+            const crossZ = forearmVec.x * palmVec.y - forearmVec.y * palmVec.x;
+            
+            return {
+                angle: angle,
+                isBendingInward: crossZ < 0,
+                elbow: elbow,
+                wrist: wrist,
+                handBack: handBack
+            };
+        }
+
+        // ========== 绘制（所有坐标已镜像，直接绘制） ==========
+
+        function drawScene(poseLandmarks, handLandmarks, isLeftHand, wristResult) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // 绘制视频（镜像显示）
+            canvasCtx.save();
+            canvasCtx.scale(-1, 1);
+            canvasCtx.drawImage(videoElement, -canvasElement.width, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.restore();
+
+            // 绘制手臂骨骼（坐标已镜像）
+            if (poseLandmarks && wristResult) {
+                const shoulderIndex = isLeftHand ? 11 : 12;
+                const shoulder = mirrorX(poseLandmarks[shoulderIndex]);
+                const elbow = wristResult.elbow;
+                const wrist = wristResult.wrist;
+                
+                // 肩 → 肘 → 腕
+                canvasCtx.strokeStyle = '#0088ff';
+                canvasCtx.lineWidth = 5;
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(shoulder.x * canvasElement.width, shoulder.y * canvasElement.height);
+                canvasCtx.lineTo(elbow.x * canvasElement.width, elbow.y * canvasElement.height);
+                canvasCtx.lineTo(wrist.x * canvasElement.width, wrist.y * canvasElement.height);
+                canvasCtx.stroke();
+                
+                // 关键点
+                [shoulder, elbow, wrist].forEach((p, i) => {
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(p.x * canvasElement.width, p.y * canvasElement.height, i === 1 ? 10 : 8, 0, 2 * Math.PI);
+                    canvasCtx.fillStyle = i === 1 ? '#ff8800' : '#ff0000';
+                    canvasCtx.fill();
+                });
+            }
+
+            // 绘制手部骨骼（坐标已镜像）
+            if (handLandmarks) {
+                const connections = [
+                    [0,1],[1,2],[2,3],[3,4],
+                    [0,5],[5,6],[6,7],[7,8],
+                    [0,9],[9,10],[10,11],[11,12],
+                    [0,13],[13,14],[14,15],[15,16],
+                    [0,17],[17,18],[18,19],[19,20],
+                    [5,9],[9,13],[13,17]
+                ];
+
+                canvasCtx.strokeStyle = '#00ff88';
+                canvasCtx.lineWidth = 3;
+                for (const [start, end] of connections) {
+                    const p1 = mirrorX(handLandmarks[start]);
+                    const p2 = mirrorX(handLandmarks[end]);
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(p1.x * canvasElement.width, p1.y * canvasElement.height);
+                    canvasCtx.lineTo(p2.x * canvasElement.width, p2.y * canvasElement.height);
+                    canvasCtx.stroke();
+                }
+
+                for (let i = 0; i < handLandmarks.length; i++) {
+                    const p = mirrorX(handLandmarks[i]);
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(p.x * canvasElement.width, p.y * canvasElement.height, 5, 0, 2 * Math.PI);
+                    if (i === 0) canvasCtx.fillStyle = '#ff4444';
+                    else canvasCtx.fillStyle = '#00ffff';
+                    canvasCtx.fill();
+                }
+
+                // 手掌方向
+                if (wristResult && wristResult.handBack) {
+                    const handWrist = mirrorX(handLandmarks[0]);
+                    
+                    canvasCtx.strokeStyle = '#ff00ff';
+                    canvasCtx.lineWidth = 4;
+                    canvasCtx.setLineDash([8, 4]);
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(
+                        handWrist.x * canvasElement.width,
+                        handWrist.y * canvasElement.height
+                    );
+                    canvasCtx.lineTo(
+                        wristResult.handBack.x * canvasElement.width,
+                        wristResult.handBack.y * canvasElement.height
+                    );
+                    canvasCtx.stroke();
+                    canvasCtx.setLineDash([]);
+                    
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(
+                        wristResult.handBack.x * canvasElement.width,
+                        wristResult.handBack.y * canvasElement.height,
+                        8, 0, 2 * Math.PI
+                    );
+                    canvasCtx.fillStyle = '#ff00ff';
+                    canvasCtx.fill();
+                }
+            }
+
+            // 显示信息
+            canvasCtx.fillStyle = 'yellow';
+            canvasCtx.font = 'bold 16px sans-serif';
+            const handLabel = isLeftHand ? '左手' : '右手';
+            canvasCtx.fillText(`${handLabel} 手腕弯曲: ${wristResult ? wristResult.angle.toFixed(1) : '--'}°`, 10, 25);
+        }
+
+        // ========== Holistic ==========
+
+        let holistic;
+        let lastResults = null;
+
+        try {
+            holistic = new Holistic({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
+            });
+            
+            holistic.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: false,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+            
+            holistic.onResults((results) => {
+                lastResults = results;
+            });
+        } catch(e) {
+            console.error('Holistic 初始化失败:', e);
+        }
+
+        // ========== 主循环 ==========
+
+        async function processFrame() {
+            if (!isRunning) return;
+            
+            if (videoElement.readyState >= 2 && videoElement.videoWidth > 0) {
+                try {
+                    await holistic.send({ image: videoElement });
+                    
+                    if (lastResults) {
+                        const poseLandmarks = lastResults.poseLandmarks;
+                        let handLandmarks = null;
+                        let isLeftHand = false;
+                        
+                        if (lastResults.leftHandLandmarks) {
+                            handLandmarks = lastResults.leftHandLandmarks;
+                            isLeftHand = true;
+                        } else if (lastResults.rightHandLandmarks) {
+                            handLandmarks = lastResults.rightHandLandmarks;
+                            isLeftHand = false;
+                        }
+                        
+                        if (poseLandmarks && handLandmarks) {
+                            const wristResult = calculateWristBendAngle(
+                                poseLandmarks, 
+                                handLandmarks,
+                                isLeftHand
+                            );
+                            
+                            drawScene(poseLandmarks, handLandmarks, isLeftHand, wristResult);
+                            
+                            if (wristResult) {
+                                const angle = wristResult.angle;
+                                angleDisplay.textContent = `手腕弯曲: ${angle.toFixed(1)}°`;
+                                
+                                if (angle < (180 - GOUWAN_THRESHOLD) && wristResult.isBendingInward) {
+                                    alertBox.style.display = 'block';
+                                    angleDisplay.style.background = 'rgba(255, 0, 0, 0.8)';
+                                    angleDisplay.style.color = 'white';
+                                    statusDiv.textContent = '⚠️ 检测到勾腕！';
+                                    statusDiv.style.color = '#ff4444';
+                                    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                                } else {
+                                    alertBox.style.display = 'none';
+                                    angleDisplay.style.background = 'rgba(0, 200, 100, 0.8)';
+                                    angleDisplay.style.color = 'white';
+                                    statusDiv.textContent = '✅ 姿势正确';
+                                    statusDiv.style.color = '#00ff88';
+                                }
+                            } else {
+                                angleDisplay.textContent = '手腕弯曲: --°';
+                                statusDiv.textContent = '请调整位置';
+                                statusDiv.style.color = '#ffaa00';
+                                alertBox.style.display = 'none';
+                            }
+                        } else {
+                            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                            canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                            canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+                            canvasCtx.fillStyle = 'white';
+                            canvasCtx.font = '20px sans-serif';
+                            canvasCtx.textAlign = 'center';
+                            
+                            if (!poseLandmarks) {
+                                canvasCtx.fillText('请后退，让摄像头拍到肩膀', canvasElement.width / 2, canvasElement.height / 2);
+                            } else if (!handLandmarks) {
+                                canvasCtx.fillText('请将手放在摄像头前', canvasElement.width / 2, canvasElement.height / 2);
+                            }
+                            
+                            statusDiv.textContent = '未检测到完整手臂';
+                            statusDiv.style.color = '#aaa';
+                            angleDisplay.textContent = '手腕弯曲: --°';
+                            angleDisplay.style.background = 'rgba(0, 0, 0, 0.7)';
+                            alertBox.style.display = 'none';
+                        }
+                    }
+                } catch (e) {
+                    console.error('检测错误:', e);
+                }
+            }
+            
+            requestAnimationFrame(processFrame);
+        }
+
+        // ========== 启动 ==========
+
+        startBtn.addEventListener('click', async () => {
+            if (videoDevices.length === 0) {
+                const ok = await enumerateCameras();
+                if (!ok) {
+                    await startCamera();
+                    return;
+                }
+            }
+            await startCamera();
+        });
+    </script>
+</body>
+</html>
