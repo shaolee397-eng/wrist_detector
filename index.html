@@ -34,6 +34,7 @@
             justify-content: center;
             align-items: center;
             overflow: hidden;
+            background: #000;
         }
         
         #input_video {
@@ -47,6 +48,8 @@
         
         #output_canvas {
             position: absolute;
+            top: 0;
+            left: 0;
             width: 100%;
             height: 100%;
             z-index: 2;
@@ -67,12 +70,6 @@
             display: none;
             z-index: 100;
             text-align: center;
-            animation: pulse 0.5s infinite alternate;
-        }
-        
-        @keyframes pulse {
-            from { transform: translate(-50%, -50%) scale(1); }
-            to { transform: translate(-50%, -50%) scale(1.05); }
         }
         
         #angle-display {
@@ -116,42 +113,52 @@
             position: fixed;
             top: 5px;
             right: 5px;
-            background: rgba(0,0,0,0.85);
-            padding: 8px;
-            border-radius: 6px;
-            font-size: 11px;
+            background: rgba(0,0,0,0.9);
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 12px;
             color: #0f0;
             z-index: 300;
-            max-width: 280px;
-            line-height: 1.5;
-            max-height: 200px;
+            max-width: 300px;
+            line-height: 1.6;
+            max-height: 250px;
             overflow-y: auto;
         }
         
-        #guide-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-            z-index: 10;
+        #camera-row {
             display: none;
+            justify-content: center;
+            gap: 10px;
+            padding: 5px;
+            z-index: 10;
         }
         
-        .guide-box {
-            position: absolute;
-            border: 2px dashed rgba(0, 255, 136, 0.5);
-            border-radius: 8px;
+        #camera-select {
+            padding: 8px 15px;
+            border-radius: 20px;
+            border: none;
+            background: #333;
+            color: white;
+            font-size: 14px;
+        }
+        
+        #switch-cam-btn {
+            padding: 8px 20px;
+            border-radius: 20px;
+            border: none;
+            background: #0066cc;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
         }
     </style>
 </head>
 <body>
     <div id="start-screen">
-        <h1 style="font-size:28px; margin-bottom:10px;">✍️ 勾腕识别工具</h1>
-        <p style="color:#aaa; margin-bottom:10px; padding:0 20px; text-align:center;">
+        <h1 style="font-size:28px; margin-bottom:10px;">✍️ 勾腕识别</h1>
+        <p style="color:#aaa; text-align:center; padding:0 20px;">
             需要摄像头权限<br>
-            请确保摄像头能拍到肩膀和手臂
+            请确保能拍到肩膀和手臂
         </p>
         <button id="start-btn">📷 开启摄像头</button>
     </div>
@@ -159,6 +166,11 @@
     <div id="header" style="display:none;">
         <h1>勾腕识别</h1>
         <div id="status">初始化...</div>
+    </div>
+    
+    <div id="camera-row">
+        <select id="camera-select"><option>加载中...</option></select>
+        <button id="switch-cam-btn">🔄 切换</button>
     </div>
     
     <div id="main" style="display:none;">
@@ -188,157 +200,207 @@
         const mainDiv = document.getElementById('main');
         const headerDiv = document.getElementById('header');
         const debugInfo = document.getElementById('debug-info');
+        const cameraRow = document.getElementById('camera-row');
+        const cameraSelect = document.getElementById('camera-select');
+        const switchCamBtn = document.getElementById('switch-cam-btn');
 
         const GOUWAN_THRESHOLD = 35;
         let isRunning = false;
         let holistic = null;
-        let frameCount = 0;
+        let currentStream = null;
+        let videoDevices = [];
+        let currentDeviceIndex = 0;
 
         function log(msg) {
             console.log(msg);
-            debugInfo.innerHTML += '<br>' + msg;
-            // 保持滚动到底部
+            const time = new Date().toLocaleTimeString();
+            debugInfo.innerHTML += `<br>[${time}] ${msg}`;
             debugInfo.scrollTop = debugInfo.scrollHeight;
         }
 
-        // ========== 启动摄像头 ==========
-
-        startBtn.addEventListener('click', async () => {
-            startBtn.textContent = '启动中...';
-            startBtn.disabled = true;
-            log('请求摄像头...');
-
+        // ========== 摄像头枚举 ==========
+        async function getCameras() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { 
-                        facingMode: 'user',
-                        width: { ideal: 640 },
-                        height: { ideal: 480 }
-                    },
-                    audio: false
-                });
-
-                log('摄像头获取成功');
-                videoElement.srcObject = stream;
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                stream.getTracks().forEach(t => t.stop());
                 
-                await new Promise((resolve, reject) => {
-                    videoElement.onloadedmetadata = () => resolve();
-                    videoElement.onerror = (e) => reject(e);
-                    setTimeout(() => reject(new Error('超时')), 15000);
-                });
-
-                await videoElement.play();
-                log('视频播放中, 尺寸:' + videoElement.videoWidth + 'x' + videoElement.videoHeight);
-
-                // 设置 canvas
-                canvasElement.width = videoElement.videoWidth || 640;
-                canvasElement.height = videoElement.videoHeight || 480;
-                log('Canvas: ' + canvasElement.width + 'x' + canvasElement.height);
-
-                startScreen.style.display = 'none';
-                mainDiv.style.display = 'flex';
-                headerDiv.style.display = 'block';
-                statusDiv.textContent = '加载模型...';
-
-                // 初始化 Holistic
-                initHolistic();
-
-            } catch (err) {
-                log('错误: ' + err.name + ' - ' + err.message);
-                startBtn.textContent = '启动失败，重试';
-                startBtn.disabled = false;
-                alert('摄像头启动失败: ' + err.message);
-            }
-        });
-
-        // ========== 初始化 Holistic ==========
-
-        function initHolistic() {
-            try {
-                log('创建 Holistic...');
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                videoDevices = devices.filter(d => d.kind === 'videoinput');
                 
-                holistic = new Holistic({
-                    locateFile: (file) => {
-                        log('加载: ' + file);
-                        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
-                    }
+                cameraSelect.innerHTML = '';
+                videoDevices.forEach((device, i) => {
+                    const opt = document.createElement('option');
+                    opt.value = device.deviceId;
+                    opt.textContent = device.label || `摄像头 ${i+1}`;
+                    cameraSelect.appendChild(opt);
                 });
-
-                holistic.setOptions({
-                    modelComplexity: 1,
-                    smoothLandmarks: true,
-                    enableSegmentation: false,
-                    refineFaceLandmarks: false,  // 不需要面部细节，节省性能
-                    minDetectionConfidence: 0.3,   // 降低阈值，提高检测率
-                    minTrackingConfidence: 0.3
-                });
-
-                // 关键：onResults 回调
-                holistic.onResults((results) => {
-                    frameCount++;
-                    if (frameCount % 30 === 0) {  // 每30帧记录一次
-                        log('帧#' + frameCount + ' 回调触发');
-                    }
-                    
-                    // 检查结果
-                    const hasPose = results.poseLandmarks && results.poseLandmarks.length > 0;
-                    const hasLeftHand = results.leftHandLandmarks && results.leftHandLandmarks.length > 0;
-                    const hasRightHand = results.rightHandLandmarks && results.rightHandLandmarks.length > 0;
-                    
-                    if (frameCount % 30 === 0) {
-                        log('Pose:' + hasPose + ' 左手:' + hasLeftHand + ' 右手:' + hasRightHand);
-                    }
-
-                    // 处理并绘制
-                    processResults(results);
-                });
-
-                log('Holistic 初始化完成，开始检测循环');
-                isRunning = true;
-                statusDiv.textContent = '检测中...';
-                processFrame();
-
+                
+                // 优先选后置
+                const backIdx = videoDevices.findIndex(d => 
+                    d.label.toLowerCase().includes('back') || 
+                    d.label.toLowerCase().includes('environment') ||
+                    d.label.includes('后置')
+                );
+                if (backIdx >= 0) {
+                    cameraSelect.selectedIndex = backIdx;
+                    currentDeviceIndex = backIdx;
+                }
+                
+                cameraRow.style.display = 'flex';
+                return true;
             } catch (e) {
-                log('Holistic 失败: ' + e.message);
-                statusDiv.textContent = '模型加载失败';
+                log('枚举失败: ' + e.message);
+                return false;
             }
         }
 
-        // ========== 处理结果 ==========
+        // ========== 启动摄像头 ==========
+        async function startCamera(deviceId) {
+            if (currentStream) {
+                currentStream.getTracks().forEach(t => t.stop());
+                currentStream = null;
+            }
 
-        function processResults(results) {
+            const constraints = {
+                video: {
+                    width: { ideal: 640 },
+                    height: { ideal: 480 },
+                    deviceId: deviceId ? { exact: deviceId } : undefined
+                },
+                audio: false
+            };
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                currentStream = stream;
+                videoElement.srcObject = stream;
+                
+                await new Promise((resolve, reject) => {
+                    videoElement.onloadedmetadata = resolve;
+                    videoElement.onerror = reject;
+                    setTimeout(() => reject(new Error('超时')), 10000);
+                });
+                
+                await videoElement.play();
+                
+                // 设置 canvas 尺寸
+                const vw = videoElement.videoWidth || 640;
+                const vh = videoElement.videoHeight || 480;
+                canvasElement.width = vw;
+                canvasElement.height = vh;
+                
+                log(`视频: ${vw}x${vh}`);
+                return true;
+                
+            } catch (e) {
+                log('摄像头失败: ' + e.message);
+                alert('摄像头启动失败: ' + e.message);
+                return false;
+            }
+        }
+
+        // ========== 切换摄像头 ==========
+        switchCamBtn.addEventListener('click', async () => {
+            if (videoDevices.length < 2) {
+                alert('只有一个摄像头');
+                return;
+            }
+            currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
+            cameraSelect.selectedIndex = currentDeviceIndex;
+            await startCamera(videoDevices[currentDeviceIndex].deviceId);
+        });
+
+        cameraSelect.addEventListener('change', async () => {
+            await startCamera(cameraSelect.value);
+        });
+
+        // ========== 启动按钮 ==========
+        startBtn.addEventListener('click', async () => {
+            startBtn.textContent = '启动中...';
+            startBtn.disabled = true;
+
+            // 枚举摄像头
+            await getCameras();
+            
+            // 启动
+            const ok = await startCamera(cameraSelect.value);
+            if (!ok) {
+                startBtn.textContent = '重试';
+                startBtn.disabled = false;
+                return;
+            }
+
+            // 显示界面
+            startScreen.style.display = 'none';
+            mainDiv.style.display = 'flex';
+            headerDiv.style.display = 'block';
+            statusDiv.textContent = '加载模型...';
+
+            // 初始化 Holistic
+            initHolistic();
+        });
+
+        // ========== 初始化 Holistic ==========
+        function initHolistic() {
+            log('初始化 Holistic...');
+            
+            holistic = new Holistic({
+                locateFile: (file) => {
+                    log('加载: ' + file);
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+                }
+            });
+
+            holistic.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: false,
+                refineFaceLandmarks: false,
+                minDetectionConfidence: 0.3,
+                minTrackingConfidence: 0.3
+            });
+
+            holistic.onResults(onResults);
+
+            log('Holistic 创建完成');
+            isRunning = true;
+            statusDiv.textContent = '检测中...';
+            processFrame();
+        }
+
+        // ========== 处理结果 ==========
+        function onResults(results) {
             const w = canvasElement.width;
             const h = canvasElement.height;
             
-            // 清除画布
+            // 清屏
             canvasCtx.clearRect(0, 0, w, h);
 
-            const poseLandmarks = results.poseLandmarks;
+            const pose = results.poseLandmarks;
             const leftHand = results.leftHandLandmarks;
             const rightHand = results.rightHandLandmarks;
 
-            // 判断是否有有效数据
-            let handLandmarks = null;
-            let isLeftHand = false;
+            // 确定使用哪只手
+            let hand = null;
+            let isLeft = false;
             
             if (leftHand) {
-                handLandmarks = leftHand;
-                isLeftHand = true;
+                hand = leftHand;
+                isLeft = true;
             } else if (rightHand) {
-                handLandmarks = rightHand;
-                isLeftHand = false;
+                hand = rightHand;
+                isLeft = false;
             }
 
-            // 情况1：有 Pose 也有 Hand → 计算勾腕角度
-            if (poseLandmarks && handLandmarks) {
-                const wristResult = calculateWristBendAngle(poseLandmarks, handLandmarks, isLeftHand);
-                drawFullScene(poseLandmarks, handLandmarks, isLeftHand, wristResult, w, h);
+            // 情况1：有 Pose 有 Hand → 计算角度
+            if (pose && hand) {
+                const result = calcAngle(pose, hand, isLeft);
+                drawAll(pose, hand, isLeft, result, w, h);
                 
-                if (wristResult) {
-                    const angle = wristResult.angle;
-                    angleDisplay.textContent = `手腕: ${angle.toFixed(1)}°`;
+                if (result) {
+                    angleDisplay.textContent = `手腕: ${result.angle.toFixed(1)}°`;
                     
-                    if (angle < (180 - GOUWAN_THRESHOLD) && wristResult.isBendingInward) {
+                    if (result.angle < (180 - GOUWAN_THRESHOLD) && result.isBendingInward) {
                         alertBox.style.display = 'block';
                         angleDisplay.style.background = 'rgba(255, 0, 0, 0.8)';
                         statusDiv.textContent = '⚠️ 勾腕！';
@@ -354,9 +416,9 @@
                 return;
             }
 
-            // 情况2：只有 Hand，没有 Pose → 提示后退
-            if (handLandmarks && !poseLandmarks) {
-                drawHandOnly(handLandmarks, w, h);
+            // 情况2：只有 Hand
+            if (hand && !pose) {
+                drawHand(hand, w, h);
                 statusDiv.textContent = '请后退，让肩膀入镜';
                 statusDiv.style.color = '#ffaa00';
                 angleDisplay.textContent = '手腕: --°';
@@ -365,9 +427,9 @@
                 return;
             }
 
-            // 情况3：只有 Pose，没有 Hand → 提示伸手
-            if (poseLandmarks && !handLandmarks) {
-                drawPoseOnly(poseLandmarks, w, h);
+            // 情况3：只有 Pose
+            if (pose && !hand) {
+                drawPose(pose, w, h);
                 statusDiv.textContent = '请将手放入画面';
                 statusDiv.style.color = '#ffaa00';
                 angleDisplay.textContent = '手腕: --°';
@@ -376,155 +438,103 @@
                 return;
             }
 
-            // 情况4：什么都没有 → 提示
+            // 情况4：什么都没有
             drawGuide(w, h);
-            statusDiv.textContent = '未检测到身体，请调整位置';
+            statusDiv.textContent = '未检测到身体';
             statusDiv.style.color = '#aaa';
             angleDisplay.textContent = '手腕: --°';
             angleDisplay.style.background = 'rgba(0,0,0,0.7)';
             alertBox.style.display = 'none';
         }
 
-        // ========== 计算 ==========
+        // ========== 计算角度 ==========
+        function mx(p) { return { x: 1 - p.x, y: p.y }; }
 
-        function mirrorX(point) {
-            return { x: 1 - point.x, y: point.y };
+        function calcAngle(pose, hand, isLeft) {
+            const elbowIdx = isLeft ? 13 : 14;
+            const wristIdx = isLeft ? 15 : 16;
+            
+            if (!pose[elbowIdx] || !pose[wristIdx]) return null;
+            
+            const elbow = mx(pose[elbowIdx]);
+            const wrist = mx(pose[wristIdx]);
+            
+            const forearm = { x: wrist.x - elbow.x, y: wrist.y - elbow.y };
+            
+            const mcp9 = mx(hand[9]);
+            const mcp13 = mx(hand[13]);
+            const handBack = { x: (mcp9.x + mcp13.x) / 2, y: (mcp9.y + mcp13.y) / 2 };
+            
+            const palm = { x: handBack.x - wrist.x, y: handBack.y - wrist.y };
+            
+            const dot = forearm.x * palm.x + forearm.y * palm.y;
+            const mf = Math.sqrt(forearm.x**2 + forearm.y**2);
+            const mp = Math.sqrt(palm.x**2 + palm.y**2);
+            
+            if (mf === 0 || mp === 0) return null;
+            
+            const angle = Math.acos(Math.min(1, Math.max(-1, dot/(mf*mp)))) * (180/Math.PI);
+            const cross = forearm.x * palm.y - forearm.y * palm.x;
+            
+            return { angle, isBendingInward: cross < 0, elbow, wrist, handBack };
         }
 
-        function calculateWristBendAngle(poseLandmarks, handLandmarks, isLeftHand) {
-            const elbowIndex = isLeftHand ? 13 : 14;
-            const wristIndex = isLeftHand ? 15 : 16;
-            
-            // 检查关键点是否有效
-            if (!poseLandmarks[elbowIndex] || !poseLandmarks[wristIndex]) return null;
-            
-            const elbow = mirrorX(poseLandmarks[elbowIndex]);
-            const wrist = mirrorX(poseLandmarks[wristIndex]);
-            
-            const forearmVec = {
-                x: wrist.x - elbow.x,
-                y: wrist.y - elbow.y
-            };
-            
-            const middleMCP = mirrorX(handLandmarks[9]);
-            const ringMCP = mirrorX(handLandmarks[13]);
-            const handBack = {
-                x: (middleMCP.x + ringMCP.x) / 2,
-                y: (middleMCP.y + ringMCP.y) / 2
-            };
-            
-            const palmVec = {
-                x: handBack.x - wrist.x,
-                y: handBack.y - wrist.y
-            };
-            
-            const dot = forearmVec.x * palmVec.x + forearmVec.y * palmVec.y;
-            const magForearm = Math.sqrt(forearmVec.x ** 2 + forearmVec.y ** 2);
-            const magPalm = Math.sqrt(palmVec.x ** 2 + palmVec.y ** 2);
-            
-            if (magForearm === 0 || magPalm === 0) return null;
-            
-            let angle = Math.acos(Math.min(1, Math.max(-1, dot / (magForearm * magPalm)))) * (180 / Math.PI);
-            const crossZ = forearmVec.x * palmVec.y - forearmVec.y * palmVec.x;
-            
-            return { angle, isBendingInward: crossZ < 0, elbow, wrist, handBack };
-        }
-
-        // ========== 绘制函数 ==========
-
-        function drawFullScene(poseLandmarks, handLandmarks, isLeftHand, wristResult, w, h) {
+        // ========== 绘制 ==========
+        function drawAll(pose, hand, isLeft, result, w, h) {
             // 手臂
-            if (wristResult) {
-                const shoulderIndex = isLeftHand ? 11 : 12;
-                const shoulder = mirrorX(poseLandmarks[shoulderIndex]);
+            if (result) {
+                const shoulder = mx(pose[isLeft ? 11 : 12]);
                 
-                canvasCtx.strokeStyle = '#0088ff';
-                canvasCtx.lineWidth = 5;
+                canvasCtx.strokeStyle = '#00ff00';
+                canvasCtx.lineWidth = 6;
                 canvasCtx.beginPath();
                 canvasCtx.moveTo(shoulder.x * w, shoulder.y * h);
-                canvasCtx.lineTo(wristResult.elbow.x * w, wristResult.elbow.y * h);
-                canvasCtx.lineTo(wristResult.wrist.x * w, wristResult.wrist.y * h);
+                canvasCtx.lineTo(result.elbow.x * w, result.elbow.y * h);
+                canvasCtx.lineTo(result.wrist.x * w, result.wrist.y * h);
                 canvasCtx.stroke();
                 
+                // 点
                 [
-                    {p: shoulder, c: '#ff0000', r: 8},
-                    {p: wristResult.elbow, c: '#ff8800', r: 10},
-                    {p: wristResult.wrist, c: '#ff0000', r: 8}
-                ].forEach(({p, c, r}) => {
+                    [shoulder, '#ff0000', 10],
+                    [result.elbow, '#ff8800', 12],
+                    [result.wrist, '#ff0000', 10]
+                ].forEach(([p, c, r]) => {
                     canvasCtx.beginPath();
-                    canvasCtx.arc(p.x * w, p.y * h, r, 0, 2 * Math.PI);
+                    canvasCtx.arc(p.x * w, p.y * h, r, 0, 2*Math.PI);
                     canvasCtx.fillStyle = c;
                     canvasCtx.fill();
                 });
             }
 
             // 手部
-            drawHandBones(handLandmarks, w, h);
-            
+            drawHand(hand, w, h);
+
             // 手掌方向
-            if (wristResult && wristResult.handBack) {
-                const handWrist = mirrorX(handLandmarks[0]);
+            if (result && result.handBack) {
+                const hw = mx(hand[0]);
                 canvasCtx.strokeStyle = '#ff00ff';
-                canvasCtx.lineWidth = 3;
-                canvasCtx.setLineDash([6, 3]);
+                canvasCtx.lineWidth = 4;
+                canvasCtx.setLineDash([8, 4]);
                 canvasCtx.beginPath();
-                canvasCtx.moveTo(handWrist.x * w, handWrist.y * h);
-                canvasCtx.lineTo(wristResult.handBack.x * w, wristResult.handBack.y * h);
+                canvasCtx.moveTo(hw.x * w, hw.y * h);
+                canvasCtx.lineTo(result.handBack.x * w, result.handBack.y * h);
                 canvasCtx.stroke();
                 canvasCtx.setLineDash([]);
                 
                 canvasCtx.beginPath();
-                canvasCtx.arc(wristResult.handBack.x * w, wristResult.handBack.y * h, 6, 0, 2 * Math.PI);
+                canvasCtx.arc(result.handBack.x * w, result.handBack.y * h, 8, 0, 2*Math.PI);
                 canvasCtx.fillStyle = '#ff00ff';
                 canvasCtx.fill();
             }
 
             // 文字
             canvasCtx.fillStyle = 'yellow';
-            canvasCtx.font = 'bold 14px sans-serif';
-            const label = isLeftHand ? '左手' : '右手';
-            canvasCtx.fillText(`${label} ${wristResult ? wristResult.angle.toFixed(1) : '--'}°`, 10, 20);
+            canvasCtx.font = 'bold 16px sans-serif';
+            canvasCtx.fillText(`${isLeft?'左':'右'}手 ${result?result.angle.toFixed(1):'--'}°`, 10, 25);
         }
 
-        function drawHandOnly(handLandmarks, w, h) {
-            drawHandBones(handLandmarks, w, h);
-            
-            canvasCtx.fillStyle = 'white';
-            canvasCtx.font = '18px sans-serif';
-            canvasCtx.textAlign = 'center';
-            canvasCtx.fillText('✋ 检测到手，但缺少手臂', w/2, h/2 - 30);
-            canvasCtx.fillText('请后退，让肩膀入镜', w/2, h/2);
-        }
-
-        function drawPoseOnly(poseLandmarks, w, h) {
-            // 画骨架
-            const connections = [
-                [11,13],[13,15],[12,14],[14,16],  // 手臂
-                [11,12],[23,24],[11,23],[12,24]      // 躯干
-            ];
-            
-            canvasCtx.strokeStyle = '#0088ff';
-            canvasCtx.lineWidth = 4;
-            for (const [a, b] of connections) {
-                if (poseLandmarks[a] && poseLandmarks[b]) {
-                    const p1 = mirrorX(poseLandmarks[a]);
-                    const p2 = mirrorX(poseLandmarks[b]);
-                    canvasCtx.beginPath();
-                    canvasCtx.moveTo(p1.x * w, p1.y * h);
-                    canvasCtx.lineTo(p2.x * w, p2.y * h);
-                    canvasCtx.stroke();
-                }
-            }
-
-            canvasCtx.fillStyle = 'white';
-            canvasCtx.font = '18px sans-serif';
-            canvasCtx.textAlign = 'center';
-            canvasCtx.fillText('🙋 检测到身体，但缺少手部', w/2, h/2 - 30);
-            canvasCtx.fillText('请将手放入画面', w/2, h/2);
-        }
-
-        function drawHandBones(handLandmarks, w, h) {
-            const connections = [
+        function drawHand(hand, w, h) {
+            const conn = [
                 [0,1],[1,2],[2,3],[3,4],
                 [0,5],[5,6],[6,7],[7,8],
                 [0,9],[9,10],[10,11],[11,12],
@@ -533,59 +543,76 @@
                 [5,9],[9,13],[13,17]
             ];
 
-            canvasCtx.strokeStyle = '#00ff88';
-            canvasCtx.lineWidth = 2;
-            for (const [start, end] of connections) {
-                const p1 = mirrorX(handLandmarks[start]);
-                const p2 = mirrorX(handLandmarks[end]);
+            canvasCtx.strokeStyle = '#00ffff';
+            canvasCtx.lineWidth = 3;
+            for (const [a, b] of conn) {
+                const p1 = mx(hand[a]);
+                const p2 = mx(hand[b]);
                 canvasCtx.beginPath();
                 canvasCtx.moveTo(p1.x * w, p1.y * h);
                 canvasCtx.lineTo(p2.x * w, p2.y * h);
                 canvasCtx.stroke();
             }
 
-            for (let i = 0; i < handLandmarks.length; i++) {
-                const p = mirrorX(handLandmarks[i]);
+            for (let i = 0; i < hand.length; i++) {
+                const p = mx(hand[i]);
                 canvasCtx.beginPath();
-                canvasCtx.arc(p.x * w, p.y * h, 4, 0, 2 * Math.PI);
-                canvasCtx.fillStyle = i === 0 ? '#ff4444' : '#00ffff';
+                canvasCtx.arc(p.x * w, p.y * h, 5, 0, 2*Math.PI);
+                canvasCtx.fillStyle = i === 0 ? '#ff0000' : '#00ffff';
                 canvasCtx.fill();
             }
         }
 
+        function drawPose(pose, w, h) {
+            const conn = [[11,13],[13,15],[12,14],[14,16],[11,12]];
+            canvasCtx.strokeStyle = '#0088ff';
+            canvasCtx.lineWidth = 5;
+            for (const [a, b] of conn) {
+                if (pose[a] && pose[b]) {
+                    const p1 = mx(pose[a]);
+                    const p2 = mx(pose[b]);
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(p1.x * w, p1.y * h);
+                    canvasCtx.lineTo(p2.x * w, p2.y * h);
+                    canvasCtx.stroke();
+                }
+            }
+
+            canvasCtx.fillStyle = 'white';
+            canvasCtx.font = '20px sans-serif';
+            canvasCtx.textAlign = 'center';
+            canvasCtx.fillText('🙋 检测到身体，请把手放入画面', w/2, h/2);
+        }
+
         function drawGuide(w, h) {
-            canvasCtx.strokeStyle = 'rgba(0, 255, 136, 0.3)';
+            canvasCtx.strokeStyle = 'rgba(0,255,136,0.4)';
             canvasCtx.lineWidth = 2;
             canvasCtx.setLineDash([10, 10]);
             
-            // 画一个框表示应该站的位置
-            const boxW = w * 0.6;
-            const boxH = h * 0.7;
-            const boxX = (w - boxW) / 2;
-            const boxY = (h - boxH) / 2;
+            const bw = w * 0.5;
+            const bh = h * 0.6;
+            const bx = (w - bw) / 2;
+            const by = (h - bh) / 2;
             
-            canvasCtx.strokeRect(boxX, boxY, boxW, boxH);
+            canvasCtx.strokeRect(bx, by, bw, bh);
             canvasCtx.setLineDash([]);
             
-            canvasCtx.fillStyle = 'rgba(0, 255, 136, 0.5)';
+            canvasCtx.fillStyle = 'rgba(0,255,136,0.6)';
             canvasCtx.font = '16px sans-serif';
             canvasCtx.textAlign = 'center';
-            canvasCtx.fillText('请站在框内', w/2, boxY - 10);
-            canvasCtx.fillText('让肩膀和手臂都入镜', w/2, boxY + boxH + 25);
+            canvasCtx.fillText('请站在框内', w/2, by - 10);
+            canvasCtx.fillText('让肩膀和手臂都入镜', w/2, by + bh + 25);
         }
 
         // ========== 主循环 ==========
-
         async function processFrame() {
             if (!isRunning) return;
-
+            
             if (videoElement.readyState >= 2 && videoElement.videoWidth > 0) {
                 try {
-                    if (holistic) {
-                        await holistic.send({ image: videoElement });
-                    }
+                    await holistic.send({ image: videoElement });
                 } catch (e) {
-                    log('帧错误: ' + e.message);
+                    log('send错误: ' + e.message);
                 }
             }
             
