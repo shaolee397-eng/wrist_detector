@@ -77,6 +77,12 @@
             display: none;
             z-index: 100;
             text-align: center;
+            animation: shake 0.5s infinite;
+        }
+        
+        @keyframes shake {
+            0%, 100% { transform: translate(-50%, -50%) rotate(-1deg); }
+            50% { transform: translate(-50%, -50%) rotate(1deg); }
         }
         
         #angle-display {
@@ -156,6 +162,25 @@
             z-index: 50;
             display: none;
         }
+        
+        /* 勾腕时屏幕闪烁效果 */
+        #flash-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 0, 0, 0.3);
+            z-index: 5;
+            display: none;
+            pointer-events: none;
+            animation: flash 0.5s infinite;
+        }
+        
+        @keyframes flash {
+            0%, 100% { opacity: 0; }
+            50% { opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -183,6 +208,8 @@
         <canvas id="output_canvas"></canvas>
     </div>
     
+    <div id="flash-overlay"></div>
+    
     <div id="alert-box">
         ⚠️ 勾腕 detected！<br>
         <span style="font-size:14px">请调整手腕姿势</span>
@@ -208,6 +235,7 @@
         const cameraSelect = document.getElementById('camera-select');
         const switchCamBtn = document.getElementById('switch-cam-btn');
         const guideText = document.getElementById('guide-text');
+        const flashOverlay = document.getElementById('flash-overlay');
 
         const GOUWAN_THRESHOLD = 35;
         const SMOOTHING_FACTOR = 0.3;
@@ -221,13 +249,43 @@
         let lastValidHand = null;
         let handStickCount = 0;
         let isFrontCamera = true;
-        let isGouwan = false;           // 当前是否勾腕状态
-        let lastSpeakTime = 0;          // 上次语音时间
-        const SPEAK_INTERVAL = 3000;    // 语音间隔3秒，避免连续播报
+        let isGouwan = false;
+        let lastSpeakTime = 0;
+        const SPEAK_INTERVAL = 3000;
+        let speechReady = false;  // 语音是否已准备好
+
+        // ========== 预加载语音 ==========
+        function initSpeech() {
+            if (!window.speechSynthesis) {
+                console.log('浏览器不支持语音合成');
+                return;
+            }
+            
+            // iOS Safari 需要用户交互后才能使用语音
+            // 先加载一个空的语音来激活
+            const utterance = new SpeechSynthesisUtterance('');
+            utterance.volume = 0;
+            window.speechSynthesis.speak(utterance);
+            
+            // 等待语音列表加载
+            const voices = window.speechSynthesis.getVoices();
+            if (voices.length === 0) {
+                window.speechSynthesis.onvoiceschanged = () => {
+                    speechReady = true;
+                    console.log('语音已就绪');
+                };
+            } else {
+                speechReady = true;
+                console.log('语音已就绪');
+            }
+        }
 
         // ========== 语音提醒 ==========
         function speak(text) {
-            if (!window.speechSynthesis) return;
+            if (!window.speechSynthesis) {
+                console.log('语音合成不可用');
+                return false;
+            }
             
             // 取消之前的语音
             window.speechSynthesis.cancel();
@@ -238,7 +296,29 @@
             utterance.pitch = 1.0;
             utterance.volume = 1.0;
             
+            // 尝试选择中文语音
+            const voices = window.speechSynthesis.getVoices();
+            const zhVoice = voices.find(v => v.lang.includes('zh') || v.lang.includes('CN'));
+            if (zhVoice) {
+                utterance.voice = zhVoice;
+            }
+            
+            utterance.onstart = () => console.log('语音开始');
+            utterance.onend = () => console.log('语音结束');
+            utterance.onerror = (e) => console.log('语音错误:', e.error);
+            
             window.speechSynthesis.speak(utterance);
+            return true;
+        }
+
+        // ========== 强烈震动 ==========
+        function strongVibrate() {
+            if (!navigator.vibrate) return;
+            
+            // 震动模式：长-短-长-短
+            navigator.vibrate([
+                300, 100, 200, 100, 300, 100, 200
+            ]);
         }
 
         // ========== 摄像头 ==========
@@ -354,6 +434,14 @@
             startBtn.textContent = '启动中...';
             startBtn.disabled = true;
 
+            // 预加载语音（必须在用户交互中调用）
+            initSpeech();
+            // 测试语音
+            setTimeout(() => {
+                const ok = speak('请调整手腕');
+                console.log('语音测试:', ok, 'speechReady:', speechReady);
+            }, 500);
+
             await getCameras();
             const ok = await startCamera(cameraSelect.value);
             if (!ok) {
@@ -467,26 +555,30 @@
                     drawAll(pose, hand, isLeft, result, w, h);
                     angleDisplay.textContent = `手腕: ${result.angle.toFixed(1)}°`;
                     
-                    // 判断勾腕
                     const nowGouwan = result.angle < (180 - GOUWAN_THRESHOLD) && result.isBendingInward;
                     
                     if (nowGouwan) {
                         alertBox.style.display = 'block';
+                        flashOverlay.style.display = 'block';
                         angleDisplay.style.background = 'rgba(255, 0, 0, 0.8)';
                         statusDiv.textContent = '⚠️ 勾腕！';
                         statusDiv.style.color = '#ff4444';
-                        if (navigator.vibrate) navigator.vibrate(200);
                         
-                        // 语音提醒：进入勾腕状态时播报，且间隔3秒
+                        // 强烈震动
+                        strongVibrate();
+                        
+                        // 语音提醒
                         const now = Date.now();
                         if (!isGouwan || (now - lastSpeakTime > SPEAK_INTERVAL)) {
-                            speak('请调整手腕');
+                            const spoken = speak('请调整手腕');
+                            console.log('语音播报:', spoken);
                             lastSpeakTime = now;
                         }
                         isGouwan = true;
                         
                     } else {
                         alertBox.style.display = 'none';
+                        flashOverlay.style.display = 'none';
                         angleDisplay.style.background = 'rgba(0, 200, 100, 0.8)';
                         statusDiv.textContent = '✅ 正常';
                         statusDiv.style.color = '#00ff88';
@@ -504,6 +596,7 @@
                 angleDisplay.textContent = '手腕: --°';
                 angleDisplay.style.background = 'rgba(0,0,0,0.7)';
                 alertBox.style.display = 'none';
+                flashOverlay.style.display = 'none';
                 guideText.style.display = 'block';
                 guideText.textContent = '⚠️ 请后退，让肩膀入镜';
                 isGouwan = false;
@@ -517,6 +610,7 @@
                 angleDisplay.textContent = '手腕: --°';
                 angleDisplay.style.background = 'rgba(0,0,0,0.7)';
                 alertBox.style.display = 'none';
+                flashOverlay.style.display = 'none';
                 guideText.style.display = 'block';
                 guideText.textContent = '⚠️ 请将手放入画面';
                 isGouwan = false;
@@ -529,6 +623,7 @@
             angleDisplay.textContent = '手腕: --°';
             angleDisplay.style.background = 'rgba(0,0,0,0.7)';
             alertBox.style.display = 'none';
+            flashOverlay.style.display = 'none';
             guideText.style.display = 'block';
             guideText.textContent = '⚠️ 请调整位置，让肩膀和手臂入镜';
             isGouwan = false;
