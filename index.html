@@ -18,14 +18,14 @@
         }
         
         #header {
-            padding: 10px;
+            padding: 8px;
             text-align: center;
             z-index: 10;
             background: #1a1a2e;
         }
         
-        h1 { font-size: 20px; }
-        #status { font-size: 12px; color: #aaa; margin-top: 3px; }
+        h1 { font-size: 18px; }
+        #status { font-size: 12px; color: #aaa; margin-top: 2px; }
         
         #main {
             flex: 1;
@@ -36,7 +36,6 @@
             overflow: hidden;
         }
         
-        /* 视频直接显示，不隐藏 */
         #input_video {
             position: absolute;
             width: 100%;
@@ -46,7 +45,6 @@
             z-index: 1;
         }
         
-        /* Canvas 覆盖在视频上 */
         #output_canvas {
             position: absolute;
             width: 100%;
@@ -64,7 +62,7 @@
             color: white;
             padding: 20px 40px;
             border-radius: 16px;
-            font-size: 24px;
+            font-size: 22px;
             font-weight: bold;
             display: none;
             z-index: 100;
@@ -124,21 +122,43 @@
             font-size: 11px;
             color: #0f0;
             z-index: 300;
-            max-width: 250px;
+            max-width: 280px;
             line-height: 1.5;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        #guide-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+            display: none;
+        }
+        
+        .guide-box {
+            position: absolute;
+            border: 2px dashed rgba(0, 255, 136, 0.5);
+            border-radius: 8px;
         }
     </style>
 </head>
 <body>
     <div id="start-screen">
         <h1 style="font-size:28px; margin-bottom:10px;">✍️ 勾腕识别工具</h1>
-        <p style="color:#aaa; margin-bottom:20px;">需要摄像头权限来检测手腕姿势</p>
+        <p style="color:#aaa; margin-bottom:10px; padding:0 20px; text-align:center;">
+            需要摄像头权限<br>
+            请确保摄像头能拍到肩膀和手臂
+        </p>
         <button id="start-btn">📷 开启摄像头</button>
     </div>
 
     <div id="header" style="display:none;">
         <h1>勾腕识别</h1>
-        <div id="status">初始化中...</div>
+        <div id="status">初始化...</div>
     </div>
     
     <div id="main" style="display:none;">
@@ -172,11 +192,13 @@
         const GOUWAN_THRESHOLD = 35;
         let isRunning = false;
         let holistic = null;
-        let lastResults = null;
+        let frameCount = 0;
 
         function log(msg) {
             console.log(msg);
             debugInfo.innerHTML += '<br>' + msg;
+            // 保持滚动到底部
+            debugInfo.scrollTop = debugInfo.scrollHeight;
         }
 
         // ========== 启动摄像头 ==========
@@ -199,32 +221,27 @@
                 log('摄像头获取成功');
                 videoElement.srcObject = stream;
                 
-                // 等待视频就绪
                 await new Promise((resolve, reject) => {
-                    videoElement.onloadedmetadata = () => {
-                        log('视频元数据加载');
-                        resolve();
-                    };
+                    videoElement.onloadedmetadata = () => resolve();
                     videoElement.onerror = (e) => reject(e);
                     setTimeout(() => reject(new Error('超时')), 15000);
                 });
 
                 await videoElement.play();
-                log('视频播放中');
+                log('视频播放中, 尺寸:' + videoElement.videoWidth + 'x' + videoElement.videoHeight);
 
-                // 设置 canvas 尺寸匹配视频
+                // 设置 canvas
                 canvasElement.width = videoElement.videoWidth || 640;
                 canvasElement.height = videoElement.videoHeight || 480;
-                log(`Canvas: ${canvasElement.width}x${canvasElement.height}`);
+                log('Canvas: ' + canvasElement.width + 'x' + canvasElement.height);
 
-                // 显示主界面
                 startScreen.style.display = 'none';
                 mainDiv.style.display = 'flex';
                 headerDiv.style.display = 'block';
                 statusDiv.textContent = '加载模型...';
 
                 // 初始化 Holistic
-                await initHolistic();
+                initHolistic();
 
             } catch (err) {
                 log('错误: ' + err.name + ' - ' + err.message);
@@ -236,9 +253,9 @@
 
         // ========== 初始化 Holistic ==========
 
-        async function initHolistic() {
+        function initHolistic() {
             try {
-                log('初始化 Holistic...');
+                log('创建 Holistic...');
                 
                 holistic = new Holistic({
                     locateFile: (file) => {
@@ -251,17 +268,34 @@
                     modelComplexity: 1,
                     smoothLandmarks: true,
                     enableSegmentation: false,
-                    minDetectionConfidence: 0.5,
-                    minTrackingConfidence: 0.5
+                    refineFaceLandmarks: false,  // 不需要面部细节，节省性能
+                    minDetectionConfidence: 0.3,   // 降低阈值，提高检测率
+                    minTrackingConfidence: 0.3
                 });
 
+                // 关键：onResults 回调
                 holistic.onResults((results) => {
-                    lastResults = results;
-                    statusDiv.textContent = '检测中...';
+                    frameCount++;
+                    if (frameCount % 30 === 0) {  // 每30帧记录一次
+                        log('帧#' + frameCount + ' 回调触发');
+                    }
+                    
+                    // 检查结果
+                    const hasPose = results.poseLandmarks && results.poseLandmarks.length > 0;
+                    const hasLeftHand = results.leftHandLandmarks && results.leftHandLandmarks.length > 0;
+                    const hasRightHand = results.rightHandLandmarks && results.rightHandLandmarks.length > 0;
+                    
+                    if (frameCount % 30 === 0) {
+                        log('Pose:' + hasPose + ' 左手:' + hasLeftHand + ' 右手:' + hasRightHand);
+                    }
+
+                    // 处理并绘制
+                    processResults(results);
                 });
 
-                log('Holistic 初始化完成');
+                log('Holistic 初始化完成，开始检测循环');
                 isRunning = true;
+                statusDiv.textContent = '检测中...';
                 processFrame();
 
             } catch (e) {
@@ -270,7 +304,88 @@
             }
         }
 
-        // ========== 核心计算 ==========
+        // ========== 处理结果 ==========
+
+        function processResults(results) {
+            const w = canvasElement.width;
+            const h = canvasElement.height;
+            
+            // 清除画布
+            canvasCtx.clearRect(0, 0, w, h);
+
+            const poseLandmarks = results.poseLandmarks;
+            const leftHand = results.leftHandLandmarks;
+            const rightHand = results.rightHandLandmarks;
+
+            // 判断是否有有效数据
+            let handLandmarks = null;
+            let isLeftHand = false;
+            
+            if (leftHand) {
+                handLandmarks = leftHand;
+                isLeftHand = true;
+            } else if (rightHand) {
+                handLandmarks = rightHand;
+                isLeftHand = false;
+            }
+
+            // 情况1：有 Pose 也有 Hand → 计算勾腕角度
+            if (poseLandmarks && handLandmarks) {
+                const wristResult = calculateWristBendAngle(poseLandmarks, handLandmarks, isLeftHand);
+                drawFullScene(poseLandmarks, handLandmarks, isLeftHand, wristResult, w, h);
+                
+                if (wristResult) {
+                    const angle = wristResult.angle;
+                    angleDisplay.textContent = `手腕: ${angle.toFixed(1)}°`;
+                    
+                    if (angle < (180 - GOUWAN_THRESHOLD) && wristResult.isBendingInward) {
+                        alertBox.style.display = 'block';
+                        angleDisplay.style.background = 'rgba(255, 0, 0, 0.8)';
+                        statusDiv.textContent = '⚠️ 勾腕！';
+                        statusDiv.style.color = '#ff4444';
+                        if (navigator.vibrate) navigator.vibrate(200);
+                    } else {
+                        alertBox.style.display = 'none';
+                        angleDisplay.style.background = 'rgba(0, 200, 100, 0.8)';
+                        statusDiv.textContent = '✅ 正常';
+                        statusDiv.style.color = '#00ff88';
+                    }
+                }
+                return;
+            }
+
+            // 情况2：只有 Hand，没有 Pose → 提示后退
+            if (handLandmarks && !poseLandmarks) {
+                drawHandOnly(handLandmarks, w, h);
+                statusDiv.textContent = '请后退，让肩膀入镜';
+                statusDiv.style.color = '#ffaa00';
+                angleDisplay.textContent = '手腕: --°';
+                angleDisplay.style.background = 'rgba(0,0,0,0.7)';
+                alertBox.style.display = 'none';
+                return;
+            }
+
+            // 情况3：只有 Pose，没有 Hand → 提示伸手
+            if (poseLandmarks && !handLandmarks) {
+                drawPoseOnly(poseLandmarks, w, h);
+                statusDiv.textContent = '请将手放入画面';
+                statusDiv.style.color = '#ffaa00';
+                angleDisplay.textContent = '手腕: --°';
+                angleDisplay.style.background = 'rgba(0,0,0,0.7)';
+                alertBox.style.display = 'none';
+                return;
+            }
+
+            // 情况4：什么都没有 → 提示
+            drawGuide(w, h);
+            statusDiv.textContent = '未检测到身体，请调整位置';
+            statusDiv.style.color = '#aaa';
+            angleDisplay.textContent = '手腕: --°';
+            angleDisplay.style.background = 'rgba(0,0,0,0.7)';
+            alertBox.style.display = 'none';
+        }
+
+        // ========== 计算 ==========
 
         function mirrorX(point) {
             return { x: 1 - point.x, y: point.y };
@@ -279,6 +394,9 @@
         function calculateWristBendAngle(poseLandmarks, handLandmarks, isLeftHand) {
             const elbowIndex = isLeftHand ? 13 : 14;
             const wristIndex = isLeftHand ? 15 : 16;
+            
+            // 检查关键点是否有效
+            if (!poseLandmarks[elbowIndex] || !poseLandmarks[wristIndex]) return null;
             
             const elbow = mirrorX(poseLandmarks[elbowIndex]);
             const wrist = mirrorX(poseLandmarks[wristIndex]);
@@ -312,16 +430,11 @@
             return { angle, isBendingInward: crossZ < 0, elbow, wrist, handBack };
         }
 
-        // ========== 绘制 ==========
+        // ========== 绘制函数 ==========
 
-        function drawScene(poseLandmarks, handLandmarks, isLeftHand, wristResult) {
-            const w = canvasElement.width;
-            const h = canvasElement.height;
-            
-            canvasCtx.clearRect(0, 0, w, h);
-
-            // 绘制 Pose 手臂
-            if (poseLandmarks && wristResult) {
+        function drawFullScene(poseLandmarks, handLandmarks, isLeftHand, wristResult, w, h) {
+            // 手臂
+            if (wristResult) {
                 const shoulderIndex = isLeftHand ? 11 : 12;
                 const shoulder = mirrorX(poseLandmarks[shoulderIndex]);
                 
@@ -333,7 +446,6 @@
                 canvasCtx.lineTo(wristResult.wrist.x * w, wristResult.wrist.y * h);
                 canvasCtx.stroke();
                 
-                // 关键点
                 [
                     {p: shoulder, c: '#ff0000', r: 8},
                     {p: wristResult.elbow, c: '#ff8800', r: 10},
@@ -346,61 +458,120 @@
                 });
             }
 
-            // 绘制手部
-            if (handLandmarks) {
-                const connections = [
-                    [0,1],[1,2],[2,3],[3,4],
-                    [0,5],[5,6],[6,7],[7,8],
-                    [0,9],[9,10],[10,11],[11,12],
-                    [0,13],[13,14],[14,15],[15,16],
-                    [0,17],[17,18],[18,19],[19,20],
-                    [5,9],[9,13],[13,17]
-                ];
+            // 手部
+            drawHandBones(handLandmarks, w, h);
+            
+            // 手掌方向
+            if (wristResult && wristResult.handBack) {
+                const handWrist = mirrorX(handLandmarks[0]);
+                canvasCtx.strokeStyle = '#ff00ff';
+                canvasCtx.lineWidth = 3;
+                canvasCtx.setLineDash([6, 3]);
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(handWrist.x * w, handWrist.y * h);
+                canvasCtx.lineTo(wristResult.handBack.x * w, wristResult.handBack.y * h);
+                canvasCtx.stroke();
+                canvasCtx.setLineDash([]);
+                
+                canvasCtx.beginPath();
+                canvasCtx.arc(wristResult.handBack.x * w, wristResult.handBack.y * h, 6, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = '#ff00ff';
+                canvasCtx.fill();
+            }
 
-                canvasCtx.strokeStyle = '#00ff88';
-                canvasCtx.lineWidth = 2;
-                for (const [start, end] of connections) {
-                    const p1 = mirrorX(handLandmarks[start]);
-                    const p2 = mirrorX(handLandmarks[end]);
+            // 文字
+            canvasCtx.fillStyle = 'yellow';
+            canvasCtx.font = 'bold 14px sans-serif';
+            const label = isLeftHand ? '左手' : '右手';
+            canvasCtx.fillText(`${label} ${wristResult ? wristResult.angle.toFixed(1) : '--'}°`, 10, 20);
+        }
+
+        function drawHandOnly(handLandmarks, w, h) {
+            drawHandBones(handLandmarks, w, h);
+            
+            canvasCtx.fillStyle = 'white';
+            canvasCtx.font = '18px sans-serif';
+            canvasCtx.textAlign = 'center';
+            canvasCtx.fillText('✋ 检测到手，但缺少手臂', w/2, h/2 - 30);
+            canvasCtx.fillText('请后退，让肩膀入镜', w/2, h/2);
+        }
+
+        function drawPoseOnly(poseLandmarks, w, h) {
+            // 画骨架
+            const connections = [
+                [11,13],[13,15],[12,14],[14,16],  // 手臂
+                [11,12],[23,24],[11,23],[12,24]      // 躯干
+            ];
+            
+            canvasCtx.strokeStyle = '#0088ff';
+            canvasCtx.lineWidth = 4;
+            for (const [a, b] of connections) {
+                if (poseLandmarks[a] && poseLandmarks[b]) {
+                    const p1 = mirrorX(poseLandmarks[a]);
+                    const p2 = mirrorX(poseLandmarks[b]);
                     canvasCtx.beginPath();
                     canvasCtx.moveTo(p1.x * w, p1.y * h);
                     canvasCtx.lineTo(p2.x * w, p2.y * h);
                     canvasCtx.stroke();
                 }
-
-                for (let i = 0; i < handLandmarks.length; i++) {
-                    const p = mirrorX(handLandmarks[i]);
-                    canvasCtx.beginPath();
-                    canvasCtx.arc(p.x * w, p.y * h, 4, 0, 2 * Math.PI);
-                    canvasCtx.fillStyle = i === 0 ? '#ff4444' : '#00ffff';
-                    canvasCtx.fill();
-                }
-
-                // 手掌方向
-                if (wristResult && wristResult.handBack) {
-                    const handWrist = mirrorX(handLandmarks[0]);
-                    
-                    canvasCtx.strokeStyle = '#ff00ff';
-                    canvasCtx.lineWidth = 3;
-                    canvasCtx.setLineDash([6, 3]);
-                    canvasCtx.beginPath();
-                    canvasCtx.moveTo(handWrist.x * w, handWrist.y * h);
-                    canvasCtx.lineTo(wristResult.handBack.x * w, wristResult.handBack.y * h);
-                    canvasCtx.stroke();
-                    canvasCtx.setLineDash([]);
-                    
-                    canvasCtx.beginPath();
-                    canvasCtx.arc(wristResult.handBack.x * w, wristResult.handBack.y * h, 6, 0, 2 * Math.PI);
-                    canvasCtx.fillStyle = '#ff00ff';
-                    canvasCtx.fill();
-                }
             }
 
-            // 信息文字
-            canvasCtx.fillStyle = 'yellow';
-            canvasCtx.font = 'bold 14px sans-serif';
-            const handLabel = isLeftHand ? '左手' : '右手';
-            canvasCtx.fillText(`${handLabel} 手腕: ${wristResult ? wristResult.angle.toFixed(1) : '--'}°`, 10, 20);
+            canvasCtx.fillStyle = 'white';
+            canvasCtx.font = '18px sans-serif';
+            canvasCtx.textAlign = 'center';
+            canvasCtx.fillText('🙋 检测到身体，但缺少手部', w/2, h/2 - 30);
+            canvasCtx.fillText('请将手放入画面', w/2, h/2);
+        }
+
+        function drawHandBones(handLandmarks, w, h) {
+            const connections = [
+                [0,1],[1,2],[2,3],[3,4],
+                [0,5],[5,6],[6,7],[7,8],
+                [0,9],[9,10],[10,11],[11,12],
+                [0,13],[13,14],[14,15],[15,16],
+                [0,17],[17,18],[18,19],[19,20],
+                [5,9],[9,13],[13,17]
+            ];
+
+            canvasCtx.strokeStyle = '#00ff88';
+            canvasCtx.lineWidth = 2;
+            for (const [start, end] of connections) {
+                const p1 = mirrorX(handLandmarks[start]);
+                const p2 = mirrorX(handLandmarks[end]);
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(p1.x * w, p1.y * h);
+                canvasCtx.lineTo(p2.x * w, p2.y * h);
+                canvasCtx.stroke();
+            }
+
+            for (let i = 0; i < handLandmarks.length; i++) {
+                const p = mirrorX(handLandmarks[i]);
+                canvasCtx.beginPath();
+                canvasCtx.arc(p.x * w, p.y * h, 4, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = i === 0 ? '#ff4444' : '#00ffff';
+                canvasCtx.fill();
+            }
+        }
+
+        function drawGuide(w, h) {
+            canvasCtx.strokeStyle = 'rgba(0, 255, 136, 0.3)';
+            canvasCtx.lineWidth = 2;
+            canvasCtx.setLineDash([10, 10]);
+            
+            // 画一个框表示应该站的位置
+            const boxW = w * 0.6;
+            const boxH = h * 0.7;
+            const boxX = (w - boxW) / 2;
+            const boxY = (h - boxH) / 2;
+            
+            canvasCtx.strokeRect(boxX, boxY, boxW, boxH);
+            canvasCtx.setLineDash([]);
+            
+            canvasCtx.fillStyle = 'rgba(0, 255, 136, 0.5)';
+            canvasCtx.font = '16px sans-serif';
+            canvasCtx.textAlign = 'center';
+            canvasCtx.fillText('请站在框内', w/2, boxY - 10);
+            canvasCtx.fillText('让肩膀和手臂都入镜', w/2, boxY + boxH + 25);
         }
 
         // ========== 主循环 ==========
@@ -412,62 +583,6 @@
                 try {
                     if (holistic) {
                         await holistic.send({ image: videoElement });
-                    }
-                    
-                    if (lastResults) {
-                        const poseLandmarks = lastResults.poseLandmarks;
-                        let handLandmarks = null;
-                        let isLeftHand = false;
-                        
-                        if (lastResults.leftHandLandmarks) {
-                            handLandmarks = lastResults.leftHandLandmarks;
-                            isLeftHand = true;
-                        } else if (lastResults.rightHandLandmarks) {
-                            handLandmarks = lastResults.rightHandLandmarks;
-                            isLeftHand = false;
-                        }
-                        
-                        if (poseLandmarks && handLandmarks) {
-                            const wristResult = calculateWristBendAngle(poseLandmarks, handLandmarks, isLeftHand);
-                            drawScene(poseLandmarks, handLandmarks, isLeftHand, wristResult);
-                            
-                            if (wristResult) {
-                                const angle = wristResult.angle;
-                                angleDisplay.textContent = `手腕: ${angle.toFixed(1)}°`;
-                                
-                                if (angle < (180 - GOUWAN_THRESHOLD) && wristResult.isBendingInward) {
-                                    alertBox.style.display = 'block';
-                                    angleDisplay.style.background = 'rgba(255, 0, 0, 0.8)';
-                                    statusDiv.textContent = '⚠️ 勾腕！';
-                                    statusDiv.style.color = '#ff4444';
-                                    if (navigator.vibrate) navigator.vibrate(200);
-                                } else {
-                                    alertBox.style.display = 'none';
-                                    angleDisplay.style.background = 'rgba(0, 200, 100, 0.8)';
-                                    statusDiv.textContent = '✅ 正常';
-                                    statusDiv.style.color = '#00ff88';
-                                }
-                            }
-                        } else {
-                            // 没检测全
-                            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                            canvasCtx.fillStyle = 'rgba(0,0,0,0.7)';
-                            canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
-                            canvasCtx.fillStyle = 'white';
-                            canvasCtx.font = '18px sans-serif';
-                            canvasCtx.textAlign = 'center';
-                            
-                            if (!poseLandmarks) {
-                                canvasCtx.fillText('请后退，拍到肩膀', canvasElement.width/2, canvasElement.height/2);
-                            } else {
-                                canvasCtx.fillText('请把手放入画面', canvasElement.width/2, canvasElement.height/2);
-                            }
-                            
-                            statusDiv.textContent = '检测中...';
-                            angleDisplay.textContent = '手腕: --°';
-                            angleDisplay.style.background = 'rgba(0,0,0,0.7)';
-                            alertBox.style.display = 'none';
-                        }
                     }
                 } catch (e) {
                     log('帧错误: ' + e.message);
