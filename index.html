@@ -238,6 +238,8 @@
 
         const GOUWAN_THRESHOLD = 35;
         const SMOOTHING_FACTOR = 0.3;
+        const BEEP_INTERVAL = 1000;
+        const SPEAK_INTERVAL = 5000;
         
         let isRunning = false;
         let holistic = null;
@@ -249,92 +251,72 @@
         let handStickCount = 0;
         let isFrontCamera = true;
         let isGouwan = false;
+        let lastBeepTime = 0;
         let lastSpeakTime = 0;
-        const SPEAK_INTERVAL = 1000;
-        
-        // Web Audio API 上下文
         let audioCtx = null;
 
-        // ========== 初始化音频上下文（必须在用户交互中调用）==========
+        // ========== 音频 ==========
         function initAudio() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             }
-            // 解锁音频（iOS Safari 需要）
             if (audioCtx.state === 'suspended') {
                 audioCtx.resume();
             }
         }
 
-        // ========== 使用 Web Audio API 播放提示音 ==========
         function playBeep() {
             if (!audioCtx) return;
-            
             try {
                 const oscillator = audioCtx.createOscillator();
                 const gainNode = audioCtx.createGain();
-                
                 oscillator.connect(gainNode);
                 gainNode.connect(audioCtx.destination);
-                
-                // 双音调提示音
                 oscillator.type = 'sine';
                 oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
                 oscillator.frequency.setValueAtTime(600, audioCtx.currentTime + 0.1);
                 oscillator.frequency.setValueAtTime(800, audioCtx.currentTime + 0.2);
-                
                 gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
                 gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
-                
                 oscillator.start(audioCtx.currentTime);
                 oscillator.stop(audioCtx.currentTime + 0.3);
-            } catch (e) {
-                console.log('音频播放失败:', e);
-            }
+            } catch (e) {}
         }
 
-        // ========== 语音提醒（备用）==========
         function speak(text) {
             if (!window.speechSynthesis) return false;
-            
             window.speechSynthesis.cancel();
-            
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'zh-CN';
             utterance.rate = 1.0;
             utterance.pitch = 1.0;
             utterance.volume = 1.0;
-            
             const voices = window.speechSynthesis.getVoices();
             const zhVoice = voices.find(v => v.lang.includes('zh') || v.lang.includes('CN'));
             if (zhVoice) utterance.voice = zhVoice;
-            
             window.speechSynthesis.speak(utterance);
             return true;
         }
 
-        // ========== 强烈震动 ==========
         function strongVibrate() {
             if (!navigator.vibrate) return;
             navigator.vibrate([300, 100, 200, 100, 300, 100, 200]);
         }
 
-        // ========== 综合提醒 ==========
         function alertGouwan() {
             const now = Date.now();
-            if (isGouwan && (now - lastSpeakTime < SPEAK_INTERVAL)) return;
             
-            // 1. 震动
+            if (isGouwan && (now - lastBeepTime < BEEP_INTERVAL)) return;
+            
             strongVibrate();
-            
-            // 2. 音频提示音（最可靠）
             playBeep();
             
-            // 3. 语音（可能不可用）
-            const spoken = speak('请调整手腕');
-            console.log('语音:', spoken);
+            if (now - lastSpeakTime > SPEAK_INTERVAL) {
+                speak('请调整手腕');
+                lastSpeakTime = now;
+            }
             
-            lastSpeakTime = now;
+            lastBeepTime = now;
         }
 
         // ========== 摄像头 ==========
@@ -354,6 +336,7 @@
                     cameraSelect.appendChild(opt);
                 });
                 
+                // ========== 优先选后置摄像头 ==========
                 const backIdx = videoDevices.findIndex(d => 
                     d.label.toLowerCase().includes('back') || 
                     d.label.toLowerCase().includes('environment') ||
@@ -450,9 +433,7 @@
             startBtn.textContent = '启动中...';
             startBtn.disabled = true;
 
-            // 初始化音频（必须在用户交互中）
             initAudio();
-            // 测试音频
             setTimeout(() => playBeep(), 300);
 
             await getCameras();
@@ -524,35 +505,30 @@
             let hand = null;
             let isLeft = false;
             
-            if (lastValidHand === 'left' && leftHand) {
-                hand = leftHand;
-                isLeft = true;
-                handStickCount++;
-            } else if (lastValidHand === 'right' && rightHand) {
+            // ========== 优先识别右手 ==========
+            if (lastValidHand === 'right' && rightHand) {
                 hand = rightHand;
                 isLeft = false;
                 handStickCount++;
-            } else if (leftHand && rightHand) {
-                const leftCenter = Math.abs(leftHand[0].x - 0.5) + Math.abs(leftHand[0].y - 0.5);
-                const rightCenter = Math.abs(rightHand[0].x - 0.5) + Math.abs(rightHand[0].y - 0.5);
-                if (leftCenter < rightCenter) {
-                    hand = leftHand;
-                    isLeft = true;
-                } else {
-                    hand = rightHand;
-                    isLeft = false;
-                }
-                lastValidHand = isLeft ? 'left' : 'right';
-                handStickCount = 1;
-            } else if (leftHand) {
+            } else if (lastValidHand === 'left' && leftHand) {
                 hand = leftHand;
                 isLeft = true;
-                lastValidHand = 'left';
+                handStickCount++;
+            } else if (rightHand && leftHand) {
+                // 两只手都有，优先选右手
+                hand = rightHand;
+                isLeft = false;
+                lastValidHand = 'right';
                 handStickCount = 1;
             } else if (rightHand) {
                 hand = rightHand;
                 isLeft = false;
                 lastValidHand = 'right';
+                handStickCount = 1;
+            } else if (leftHand) {
+                hand = leftHand;
+                isLeft = true;
+                lastValidHand = 'left';
                 handStickCount = 1;
             } else {
                 handStickCount = 0;
@@ -576,8 +552,6 @@
                         angleDisplay.style.background = 'rgba(255, 0, 0, 0.8)';
                         statusDiv.textContent = '⚠️ 勾腕！';
                         statusDiv.style.color = '#ff4444';
-                        
-                        // 综合提醒（震动 + 提示音 + 语音）
                         alertGouwan();
                         isGouwan = true;
                         
