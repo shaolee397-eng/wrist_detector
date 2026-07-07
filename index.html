@@ -210,6 +210,7 @@
         let currentStream = null;
         let videoDevices = [];
         let currentDeviceIndex = 0;
+        let modelReady = false;
 
         function log(msg) {
             console.log(msg);
@@ -218,7 +219,7 @@
             debugInfo.scrollTop = debugInfo.scrollHeight;
         }
 
-        // ========== 摄像头枚举 ==========
+        // ========== 摄像头 ==========
         async function getCameras() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -235,7 +236,6 @@
                     cameraSelect.appendChild(opt);
                 });
                 
-                // 优先选后置
                 const backIdx = videoDevices.findIndex(d => 
                     d.label.toLowerCase().includes('back') || 
                     d.label.toLowerCase().includes('environment') ||
@@ -254,7 +254,6 @@
             }
         }
 
-        // ========== 启动摄像头 ==========
         async function startCamera(deviceId) {
             if (currentStream) {
                 currentStream.getTracks().forEach(t => t.stop());
@@ -283,13 +282,12 @@
                 
                 await videoElement.play();
                 
-                // 设置 canvas 尺寸
                 const vw = videoElement.videoWidth || 640;
                 const vh = videoElement.videoHeight || 480;
                 canvasElement.width = vw;
                 canvasElement.height = vh;
                 
-                log(`视频: ${vw}x${vh}`);
+                log(`视频就绪: ${vw}x${vh}`);
                 return true;
                 
             } catch (e) {
@@ -299,7 +297,6 @@
             }
         }
 
-        // ========== 切换摄像头 ==========
         switchCamBtn.addEventListener('click', async () => {
             if (videoDevices.length < 2) {
                 alert('只有一个摄像头');
@@ -314,15 +311,12 @@
             await startCamera(cameraSelect.value);
         });
 
-        // ========== 启动按钮 ==========
+        // ========== 启动 ==========
         startBtn.addEventListener('click', async () => {
             startBtn.textContent = '启动中...';
             startBtn.disabled = true;
 
-            // 枚举摄像头
             await getCameras();
-            
-            // 启动
             const ok = await startCamera(cameraSelect.value);
             if (!ok) {
                 startBtn.textContent = '重试';
@@ -330,57 +324,80 @@
                 return;
             }
 
-            // 显示界面
             startScreen.style.display = 'none';
             mainDiv.style.display = 'flex';
             headerDiv.style.display = 'block';
             statusDiv.textContent = '加载模型...';
 
             // 初始化 Holistic
-            initHolistic();
+            await initHolistic();
         });
 
         // ========== 初始化 Holistic ==========
-        function initHolistic() {
-            log('初始化 Holistic...');
+        async function initHolistic() {
+            log('创建 Holistic...');
             
-            holistic = new Holistic({
-                locateFile: (file) => {
-                    log('加载: ' + file);
-                    return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
-                }
+            return new Promise((resolve, reject) => {
+                holistic = new Holistic({
+                    locateFile: (file) => {
+                        log('加载: ' + file);
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+                    }
+                });
+
+                holistic.setOptions({
+                    modelComplexity: 1,
+                    smoothLandmarks: true,
+                    enableSegmentation: false,
+                    refineFaceLandmarks: false,
+                    minDetectionConfidence: 0.3,
+                    minTrackingConfidence: 0.3
+                });
+
+                // 关键：第一次 onResults 表示模型就绪
+                let firstResult = true;
+                holistic.onResults((results) => {
+                    if (firstResult) {
+                        firstResult = false;
+                        modelReady = true;
+                        log('✅ 模型首次检测到结果');
+                        statusDiv.textContent = '检测中...';
+                    }
+                    onResults(results);
+                });
+
+                log('Holistic 创建完成，等待模型就绪...');
+                
+                // 发送一帧测试
+                setTimeout(async () => {
+                    try {
+                        log('发送测试帧...');
+                        await holistic.send({ image: videoElement });
+                        log('测试帧发送成功');
+                        isRunning = true;
+                        processFrame();
+                        resolve();
+                    } catch (e) {
+                        log('测试帧失败: ' + e.message);
+                        reject(e);
+                    }
+                }, 1000); // 等1秒让 WASM 初始化
             });
-
-            holistic.setOptions({
-                modelComplexity: 1,
-                smoothLandmarks: true,
-                enableSegmentation: false,
-                refineFaceLandmarks: false,
-                minDetectionConfidence: 0.3,
-                minTrackingConfidence: 0.3
-            });
-
-            holistic.onResults(onResults);
-
-            log('Holistic 创建完成');
-            isRunning = true;
-            statusDiv.textContent = '检测中...';
-            processFrame();
         }
 
         // ========== 处理结果 ==========
         function onResults(results) {
+            log('onResults 触发'); // 关键日志
+            
             const w = canvasElement.width;
             const h = canvasElement.height;
             
-            // 清屏
             canvasCtx.clearRect(0, 0, w, h);
 
             const pose = results.poseLandmarks;
             const leftHand = results.leftHandLandmarks;
             const rightHand = results.rightHandLandmarks;
 
-            // 确定使用哪只手
             let hand = null;
             let isLeft = false;
             
@@ -392,7 +409,9 @@
                 isLeft = false;
             }
 
-            // 情况1：有 Pose 有 Hand → 计算角度
+            log(`Pose:${!!pose} Hand:${!!hand} Left:${isLeft}`);
+
+            // 情况1：有 Pose 有 Hand
             if (pose && hand) {
                 const result = calcAngle(pose, hand, isLeft);
                 drawAll(pose, hand, isLeft, result, w, h);
@@ -447,7 +466,7 @@
             alertBox.style.display = 'none';
         }
 
-        // ========== 计算角度 ==========
+        // ========== 计算 ==========
         function mx(p) { return { x: 1 - p.x, y: p.y }; }
 
         function calcAngle(pose, hand, isLeft) {
@@ -481,7 +500,6 @@
 
         // ========== 绘制 ==========
         function drawAll(pose, hand, isLeft, result, w, h) {
-            // 手臂
             if (result) {
                 const shoulder = mx(pose[isLeft ? 11 : 12]);
                 
@@ -493,7 +511,6 @@
                 canvasCtx.lineTo(result.wrist.x * w, result.wrist.y * h);
                 canvasCtx.stroke();
                 
-                // 点
                 [
                     [shoulder, '#ff0000', 10],
                     [result.elbow, '#ff8800', 12],
@@ -506,10 +523,8 @@
                 });
             }
 
-            // 手部
             drawHand(hand, w, h);
 
-            // 手掌方向
             if (result && result.handBack) {
                 const hw = mx(hand[0]);
                 canvasCtx.strokeStyle = '#ff00ff';
@@ -527,7 +542,6 @@
                 canvasCtx.fill();
             }
 
-            // 文字
             canvasCtx.fillStyle = 'yellow';
             canvasCtx.font = 'bold 16px sans-serif';
             canvasCtx.fillText(`${isLeft?'左':'右'}手 ${result?result.angle.toFixed(1):'--'}°`, 10, 25);
